@@ -18,6 +18,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
 import javafx.scene.control.ProgressBar;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
@@ -524,14 +525,22 @@ public class MainApp extends Application {
         rightColumn.setPrefWidth(390);
         VBox.setVgrow(historyCard, Priority.ALWAYS);
 
+        ScrollPane leftScroll = columnScrollPane(leftColumn);
+        leftScroll.setPrefWidth(430);
+
+        ScrollPane centerScroll = columnScrollPane(centerColumn);
+        ScrollPane rightScroll = columnScrollPane(rightColumn);
+        rightScroll.setPrefWidth(390);
+
         HBox header = new HBox(16, new VBox(6, appTitle, subtitle), spacer(), readinessPill);
         header.setAlignment(Pos.CENTER_LEFT);
 
-        HBox content = new HBox(18, leftColumn, centerColumn, rightColumn);
-        HBox.setHgrow(centerColumn, Priority.ALWAYS);
-        HBox.setHgrow(rightColumn, Priority.ALWAYS);
+        HBox content = new HBox(18, leftScroll, centerScroll, rightScroll);
+        HBox.setHgrow(centerScroll, Priority.ALWAYS);
+        HBox.setHgrow(rightScroll, Priority.ALWAYS);
 
         VBox rootContent = new VBox(18, header, new Separator(), content);
+        VBox.setVgrow(content, Priority.ALWAYS);
         rootContent.setPadding(new Insets(22));
         rootContent.setStyle("""
                 -fx-background-color:
@@ -612,6 +621,21 @@ public class MainApp extends Application {
                 -fx-effect: dropshadow(gaussian, rgba(32,56,77,0.08), 18, 0.18, 0, 6);
                 """);
         return box;
+    }
+
+    private ScrollPane columnScrollPane(VBox content) {
+        ScrollPane scrollPane = new ScrollPane(content);
+        scrollPane.setFitToWidth(true);
+        scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        scrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        scrollPane.setPannable(true);
+        scrollPane.setStyle("""
+                -fx-background-color: transparent;
+                -fx-background-insets: 0;
+                -fx-padding: 0;
+                """);
+        scrollPane.setContent(content);
+        return scrollPane;
     }
 
     private Label titledLabel(String text) {

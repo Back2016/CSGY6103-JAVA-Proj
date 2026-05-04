@@ -85,6 +85,7 @@ mvn javafx:run
 In the UI:
 
 1. enter tracker host and tracker port
+2. enter this machine's reachable `Peer Host / LAN IP`
 2. click `Check Tracker`
 3. if no tracker is running, click `Start Tracker Here`
 4. click `Connect to Tracker`
@@ -114,6 +115,7 @@ Use a different peer port for each local peer, for example:
 Important:
 
 - `Tracker Host` + `Tracker Port` determine which tracker a peer connects to.
+- `Peer Host / LAN IP` is the address other computers use to reach this peer.
 - `Peer Port` must be unique for each running peer on the same machine.
 - `Peer ID` is mostly an identifier for logs/metadata, not the socket address.
 
@@ -123,6 +125,7 @@ For a LAN with multiple computers:
 
 - one computer usually runs the tracker
 - all peers point to that computer's LAN IP as `Tracker Host`
+- each peer must set `Peer Host / LAN IP` to its own LAN IP
 - each peer still uses its own local peer port
 
 Example:
@@ -130,6 +133,31 @@ Example:
 - tracker machine IP: `192.168.1.20`
 - tracker port: `5050`
 - peers on all machines connect to `192.168.1.20:5050`
+
+Example configuration:
+
+- Computer A runs the tracker and also shares files
+  - `Tracker Host`: `localhost` or `192.168.1.20`
+  - `Tracker Port`: `5050`
+  - `Peer Host / LAN IP`: `192.168.1.20`
+  - `Peer Port`: `6060`
+- Computer B downloads from A
+  - `Tracker Host`: `192.168.1.20`
+  - `Tracker Port`: `5050`
+  - `Peer Host / LAN IP`: `192.168.1.21`
+  - `Peer Port`: `6060`
+
+How to find your LAN IP on macOS:
+
+```bash
+ipconfig getifaddr en0
+```
+
+If you are using a different interface, you may need:
+
+```bash
+ipconfig getifaddr en1
+```
 
 ## Runtime Data
 
@@ -140,6 +168,12 @@ By default the app stores local peer data under:
 - `~/P2PFileSharing/tracker/tracker.db`
 
 Each peer stores its download history in its configured downloads directory as `peer-client.db`.
+
+Downloaded files are written into the configured downloads folder. On Linux or WSL2 this is commonly:
+
+```bash
+~/P2PFileSharing/downloads
+```
 
 ## Packaging
 
@@ -164,6 +198,7 @@ That portable bundle includes:
 ## Troubleshooting
 
 - If a peer stays stuck or fails downloads, check that two local peers are not using the same `Peer Port`.
+- If a download stays on `Preparing chunks` for a long time in LAN testing, verify that `Peer Host / LAN IP` is the correct LAN IP of the sharing machine.
 - If `Check Tracker` fails, either fix the host/port or click `Start Tracker Here`.
 - If macOS blocks a `.command` launcher, right-click it and choose `Open`.
 
