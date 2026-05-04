@@ -26,6 +26,7 @@ public class TrackerServer {
     }
 
     public void start() throws IOException {
+        database.clearSharedFiles();
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             while (true) {
                 Socket clientSocket = serverSocket.accept();

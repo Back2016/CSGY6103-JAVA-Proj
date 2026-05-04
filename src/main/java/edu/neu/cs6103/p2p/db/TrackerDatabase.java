@@ -78,6 +78,15 @@ public class TrackerDatabase {
         }
     }
 
+    public synchronized void clearSharedFiles() {
+        try (Connection connection = DriverManager.getConnection(jdbcUrl);
+             Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DELETE FROM shared_files");
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Failed to clear tracker database", exception);
+        }
+    }
+
     public synchronized List<SearchResult> searchFiles(String query) {
         String sql = """
                 SELECT filename, size, chunk_size, chunk_count

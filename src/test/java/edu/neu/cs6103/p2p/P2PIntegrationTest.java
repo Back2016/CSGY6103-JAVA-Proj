@@ -161,6 +161,39 @@ class P2PIntegrationTest {
         assertFalse(peerTwo.servedChunks().isEmpty());
     }
 
+    @Test
+    void trackerStartupClearsPreviouslyRegisteredFiles() throws Exception {
+        Path trackerDbPath = tempDir.resolve("tracker-restart.db");
+        TrackerDatabase staleDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
+        staleDatabase.registerSharedFile("stale.txt", 128, AppConfig.DEFAULT_CHUNK_SIZE, 1,
+                "old-peer", "localhost", 6060);
+        assertEquals(1, staleDatabase.searchFiles("stale").size());
+
+        int trackerPort = findFreePort();
+        TrackerDatabase restartedDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
+        startTrackerInBackground(trackerPort, restartedDatabase);
+
+        PeerNode peer = new PeerNode(
+                "searcher",
+                "localhost",
+                trackerPort,
+                findFreePort(),
+                tempDir.resolve("restart-shared"),
+                tempDir.resolve("restart-downloads")
+        );
+
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (System.nanoTime() < deadline) {
+            try {
+                assertTrue(peer.search("stale").isEmpty());
+                return;
+            } catch (IOException ignored) {
+                Thread.sleep(50);
+            }
+        }
+        assertTrue(peer.search("stale").isEmpty());
+    }
+
     private static void startTrackerInBackground(int trackerPort, TrackerDatabase trackerDatabase) {
         Thread thread = new Thread(() -> {
             try {
