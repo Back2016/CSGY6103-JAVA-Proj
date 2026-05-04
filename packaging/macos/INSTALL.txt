@@ -1,0 +1,25 @@
+P2P File Sharing Portable Bundle
+
+Contents:
+- P2P File Sharing.command
+- Start Tracker.command
+- lib/
+
+How to use:
+1. Double-click "Start Tracker.command" to run the tracker.
+2. Double-click "P2P File Sharing.command" to launch a peer window.
+3. Launch a second peer window by opening "P2P File Sharing.command" again.
+
+If macOS blocks the scripts:
+1. Right-click the .command file.
+2. Choose Open.
+3. Confirm the security prompt.
+
+Requirements:
+- Java 17 or newer installed on the target machine.
+
+Recommended local test:
+- Tracker host: localhost
+- Tracker port: 5050
+- Peer A port: 6060
+- Peer B port: 6061

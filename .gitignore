@@ -1,0 +1,18 @@
+.DS_Store
+
+# Build output
+/target/
+/dist/
+
+# Local runtime data
+/*.db
+/downloads/
+/demo-files/*.bin
+
+# IDE/editor files
+.idea/
+.vscode/
+*.iml
+
+# OS / shell leftovers
+*.log
