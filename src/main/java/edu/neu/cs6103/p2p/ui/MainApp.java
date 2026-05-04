@@ -63,6 +63,7 @@ public class MainApp extends Application {
         TextField trackerPortField = styledField(String.valueOf(AppConfig.DEFAULT_TRACKER_PORT));
         TextField peerPortField = styledField(String.valueOf(AppConfig.DEFAULT_PEER_PORT));
         TextField peerIdField = styledField(PeerNode.generatePeerId());
+        TextField peerHostField = styledField(suggestPeerHost());
         TextField sharedDirField = styledField(DEFAULT_SHARED_DIR.toAbsolutePath().toString());
         TextField downloadsDirField = styledField(DEFAULT_DOWNLOADS_DIR.toAbsolutePath().toString());
         TextField searchField = styledField("");
@@ -220,6 +221,7 @@ public class MainApp extends Application {
                             host,
                             port,
                             Integer.parseInt(peerPortField.getText().trim()),
+                            peerHostField.getText().trim(),
                             Path.of(sharedDirField.getText().trim()),
                             Path.of(downloadsDirField.getText().trim())
                     );
@@ -242,6 +244,7 @@ public class MainApp extends Application {
                 trackerPortField.setDisable(true);
                 peerPortField.setDisable(true);
                 peerIdField.setDisable(true);
+                peerHostField.setDisable(true);
                 sharedDirField.setDisable(true);
                 downloadsDirField.setDisable(true);
                 chooseSharedDirButton.setDisable(true);
@@ -255,7 +258,7 @@ public class MainApp extends Application {
                 statusLabel.setText("Connected. This peer can now share and download.");
 
                 appendLog(logArea, "Connected to tracker " + host + ":" + port);
-                appendLog(logArea, "Peer ready: " + peerIdField.getText().trim() + " on port " + peerPortField.getText().trim());
+                appendLog(logArea, "Peer ready: " + peerIdField.getText().trim() + " on " + peerHostField.getText().trim() + ":" + peerPortField.getText().trim());
                 refreshHistory();
             });
             connectTask.setOnFailed(evt -> {
@@ -290,6 +293,7 @@ public class MainApp extends Application {
             trackerPortField.setDisable(false);
             peerPortField.setDisable(false);
             peerIdField.setDisable(false);
+            peerHostField.setDisable(false);
             sharedDirField.setDisable(false);
             downloadsDirField.setDisable(false);
             chooseSharedDirButton.setDisable(false);
@@ -439,8 +443,9 @@ public class MainApp extends Application {
                 fieldStack("Tracker Port", "Default 5050", trackerPortField));
         configPane.addRow(1, fieldStack("Peer ID", "Auto-generated is fine", peerIdField),
                 fieldStack("Peer Port", "This peer's upload port", peerPortField));
-        configPane.add(fieldStackWithButton("Shared Folder", "Where your shared files live", sharedDirField, chooseSharedDirButton), 0, 2, 2, 1);
-        configPane.add(fieldStackWithButton("Downloads Folder", "Where downloads and peer history are stored", downloadsDirField, chooseDownloadsDirButton), 0, 3, 2, 1);
+        configPane.add(fieldStack("Peer Host / LAN IP", "Other computers must be able to reach this address", peerHostField), 0, 2, 2, 1);
+        configPane.add(fieldStackWithButton("Shared Folder", "Where your shared files live", sharedDirField, chooseSharedDirButton), 0, 3, 2, 1);
+        configPane.add(fieldStackWithButton("Downloads Folder", "Where downloads and peer history are stored", downloadsDirField, chooseDownloadsDirButton), 0, 4, 2, 1);
 
         HBox trackerActions = new HBox(10, checkTrackerButton, startLocalTrackerButton);
         HBox.setHgrow(checkTrackerButton, Priority.ALWAYS);
@@ -457,7 +462,7 @@ public class MainApp extends Application {
         VBox setupCard = card(
                 new Label("Step 1: Tracker Connection"),
                 setupHint,
-                helperLabel("Check whether a tracker is already alive. If it is not, you can start one on this machine, then connect this peer to it. Disconnect anytime to switch trackers."),
+                helperLabel("Check whether a tracker is already alive. If it is not, you can start one on this machine, then connect this peer to it. For LAN testing, set Peer Host / LAN IP to the address other computers use to reach this machine."),
                 configPane,
                 trackerActions,
                 connectionActions
@@ -682,6 +687,14 @@ public class MainApp extends Application {
                 return false;
             }
             return "PONG".equals(input.readUTF());
+        }
+    }
+
+    private static String suggestPeerHost() {
+        try {
+            return PeerNode.suggestAdvertisedHost();
+        } catch (IOException exception) {
+            return "127.0.0.1";
         }
     }
 

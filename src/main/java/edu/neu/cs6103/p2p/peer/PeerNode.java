@@ -11,8 +11,12 @@ import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
 import java.net.Socket;
+import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
@@ -22,6 +26,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -35,10 +40,14 @@ import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
 
 public class PeerNode {
+    private static final int SOCKET_CONNECT_TIMEOUT_MS = 3000;
+    private static final int SOCKET_READ_TIMEOUT_MS = 5000;
+
     private final String peerId;
     private final String trackerHost;
     private final int trackerPort;
     private final int peerPort;
+    private final String advertisedHost;
     private final Path sharedDirectory;
     private final Path downloadsDirectory;
     private final ClientDatabase clientDatabase;
@@ -51,7 +60,18 @@ public class PeerNode {
                     int peerPort,
                     Path sharedDirectory,
                     Path downloadsDirectory) throws IOException {
-        this(peerId, trackerHost, trackerPort, peerPort, sharedDirectory, downloadsDirectory,
+        this(peerId, trackerHost, trackerPort, peerPort, suggestAdvertisedHost(), sharedDirectory, downloadsDirectory,
+                downloadsDirectory.resolve("peer-client.db"));
+    }
+
+    public PeerNode(String peerId,
+                    String trackerHost,
+                    int trackerPort,
+                    int peerPort,
+                    String advertisedHost,
+                    Path sharedDirectory,
+                    Path downloadsDirectory) throws IOException {
+        this(peerId, trackerHost, trackerPort, peerPort, advertisedHost, sharedDirectory, downloadsDirectory,
                 downloadsDirectory.resolve("peer-client.db"));
     }
 
@@ -62,10 +82,22 @@ public class PeerNode {
                     Path sharedDirectory,
                     Path downloadsDirectory,
                     Path clientDatabasePath) throws IOException {
+        this(peerId, trackerHost, trackerPort, peerPort, suggestAdvertisedHost(), sharedDirectory, downloadsDirectory, clientDatabasePath);
+    }
+
+    public PeerNode(String peerId,
+                    String trackerHost,
+                    int trackerPort,
+                    int peerPort,
+                    String advertisedHost,
+                    Path sharedDirectory,
+                    Path downloadsDirectory,
+                    Path clientDatabasePath) throws IOException {
         this.peerId = peerId;
         this.trackerHost = trackerHost;
         this.trackerPort = trackerPort;
         this.peerPort = peerPort;
+        this.advertisedHost = advertisedHost;
         this.sharedDirectory = sharedDirectory;
         this.downloadsDirectory = downloadsDirectory;
         Files.createDirectories(sharedDirectory);
@@ -200,7 +232,7 @@ public class PeerNode {
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
             output.writeUTF("REGISTER");
             output.writeUTF(peerId);
-            output.writeUTF(resolveLocalAddress());
+            output.writeUTF(advertisedHost);
             output.writeInt(peerPort);
             output.writeUTF(filePath.getFileName().toString());
             output.writeLong(size);
@@ -216,7 +248,23 @@ public class PeerNode {
         }
     }
 
-    private String resolveLocalAddress() throws IOException {
+    public static String suggestAdvertisedHost() throws IOException {
+        Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+        while (interfaces.hasMoreElements()) {
+            NetworkInterface networkInterface = interfaces.nextElement();
+            if (!networkInterface.isUp() || networkInterface.isLoopback() || networkInterface.isVirtual()) {
+                continue;
+            }
+
+            Enumeration<InetAddress> addresses = networkInterface.getInetAddresses();
+            while (addresses.hasMoreElements()) {
+                InetAddress address = addresses.nextElement();
+                if (address instanceof Inet4Address && !address.isLoopbackAddress() && address.isSiteLocalAddress()) {
+                    return address.getHostAddress();
+                }
+            }
+        }
+
         return InetAddress.getLocalHost().getHostAddress();
     }
 
@@ -255,9 +303,13 @@ public class PeerNode {
     }
 
     private byte[] fetchChunk(PeerInfo peer, String filename, int chunkIndex) throws IOException {
-        try (Socket socket = new Socket(peer.host(), peer.port());
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
+        try (Socket socket = new Socket()) {
+            SocketAddress socketAddress = new InetSocketAddress(peer.host(), peer.port());
+            socket.connect(socketAddress, SOCKET_CONNECT_TIMEOUT_MS);
+            socket.setSoTimeout(SOCKET_READ_TIMEOUT_MS);
+
+            try (DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+                 DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
             output.writeUTF("CHUNK");
             output.writeUTF(filename);
             output.writeInt(chunkIndex);
@@ -277,6 +329,7 @@ public class PeerNode {
             byte[] buffer = new byte[length];
             input.readFully(buffer);
             return buffer;
+            }
         }
     }
 
