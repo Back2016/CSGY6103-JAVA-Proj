@@ -45,7 +45,7 @@ Recommended versions:
 Clone the repo and build:
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/Back2016/CSGY6103-JAVA-Proj.git
 cd CSGY6103-JAVA-Proj
 mvn clean compile
 ```
