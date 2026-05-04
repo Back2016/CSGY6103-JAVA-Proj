@@ -391,6 +391,7 @@ public class MainApp extends Application {
             searchButton.setDisable(true);
             downloadButton.setDisable(true);
             refreshHistoryButton.setDisable(true);
+            appendLog(logArea, "Starting download for " + selected.filename() + " from peers: " + peerNode.describeRemotePeers(selected));
 
             Task<Path> downloadTask = new Task<>() {
                 @Override
@@ -425,7 +426,9 @@ public class MainApp extends Application {
                 statusLabel.textProperty().unbind();
                 progressBar.setProgress(0);
                 statusLabel.setText("Download failed");
-                appendLog(logArea, "Download failed: " + downloadTask.getException().getMessage());
+                Throwable failure = downloadTask.getException();
+                appendLog(logArea, "Download failed: " + failure.getMessage());
+                appendLog(logArea, "Root cause: " + rootCauseMessage(failure));
                 refreshHistory();
                 shareFileButton.setDisable(false);
                 searchButton.setDisable(false);
@@ -735,6 +738,14 @@ public class MainApp extends Application {
             return SIZE_FORMAT.format(mb) + " MB";
         }
         return SIZE_FORMAT.format(mb / 1024.0) + " GB";
+    }
+
+    private static String rootCauseMessage(Throwable throwable) {
+        Throwable cursor = throwable;
+        while (cursor.getCause() != null) {
+            cursor = cursor.getCause();
+        }
+        return cursor.getMessage() == null ? cursor.getClass().getSimpleName() : cursor.getMessage();
     }
 
     public static void main(String[] args) {

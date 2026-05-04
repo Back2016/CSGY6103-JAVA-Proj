@@ -224,6 +224,14 @@ public class PeerNode {
         return clientDatabase.listHistory();
     }
 
+    public String describeRemotePeers(SearchResult result) {
+        return result.peers().stream()
+                .filter(peer -> !(peer.peerId().equals(peerId) && peer.port() == peerPort))
+                .map(PeerInfo::toString)
+                .reduce((a, b) -> a + ", " + b)
+                .orElse("none");
+    }
+
     private void registerFileWithTracker(Path filePath) throws IOException {
         long size = Files.size(filePath);
         int chunkCount = (int) Math.ceil((double) size / AppConfig.DEFAULT_CHUNK_SIZE);
@@ -288,18 +296,23 @@ public class PeerNode {
         List<PeerInfo> orderedPeers = new ArrayList<>(peers);
         orderedPeers.sort(Comparator.comparing(PeerInfo::peerId));
         int startIndex = chunkIndex % orderedPeers.size();
+        IOException lastException = null;
 
         for (int attempt = 0; attempt < orderedPeers.size(); attempt++) {
             PeerInfo peer = orderedPeers.get((startIndex + attempt) % orderedPeers.size());
             try {
                 return fetchChunk(peer, result.filename(), chunkIndex);
             } catch (IOException exception) {
+                lastException = exception;
                 if (attempt == orderedPeers.size() - 1) {
-                    throw new IllegalStateException("Unable to fetch chunk " + chunkIndex + " from available peers", exception);
+                    throw new IllegalStateException("Unable to fetch chunk " + chunkIndex + " from peers " +
+                            orderedPeers.stream().map(PeerInfo::toString).reduce((a, b) -> a + ", " + b).orElse("none") +
+                            ". Last error: " + rootCauseMessage(exception), exception);
                 }
             }
         }
-        throw new IllegalStateException("No peers available for chunk " + chunkIndex);
+        throw new IllegalStateException("No peers available for chunk " + chunkIndex +
+                (lastException == null ? "" : ". Last error: " + rootCauseMessage(lastException)));
     }
 
     private byte[] fetchChunk(PeerInfo peer, String filename, int chunkIndex) throws IOException {
@@ -335,5 +348,13 @@ public class PeerNode {
 
     public static String generatePeerId() {
         return "peer-" + UUID.randomUUID().toString().substring(0, 8);
+    }
+
+    private static String rootCauseMessage(Throwable throwable) {
+        Throwable cursor = throwable;
+        while (cursor.getCause() != null) {
+            cursor = cursor.getCause();
+        }
+        return cursor.getMessage() == null ? cursor.getClass().getSimpleName() : cursor.getMessage();
     }
 }
