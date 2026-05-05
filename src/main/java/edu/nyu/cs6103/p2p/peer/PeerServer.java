@@ -1,6 +1,7 @@
 package edu.nyu.cs6103.p2p.peer;
 
 import edu.nyu.cs6103.p2p.common.AppConfig;
+import edu.nyu.cs6103.p2p.common.ProtocolCommands;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -71,11 +72,11 @@ public class PeerServer {
     private void handleClient(Socket socket) {
         try (socket;
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()))) {
+            DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()))) {
             String command = input.readUTF();
             switch (command) {
-                case "MANIFEST" -> handleManifest(input, output);
-                case "CHUNK" -> handleChunk(input, output);
+                case ProtocolCommands.MANIFEST -> handleManifest(input, output);
+                case ProtocolCommands.CHUNK -> handleChunk(input, output);
                 default -> {
                     output.writeBoolean(false);
                     output.writeUTF("Unsupported peer command: " + command);

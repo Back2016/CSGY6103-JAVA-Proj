@@ -1,6 +1,8 @@
 package edu.nyu.cs6103.p2p.ui;
 
 import edu.nyu.cs6103.p2p.common.AppConfig;
+import edu.nyu.cs6103.p2p.common.ProtocolCommands;
+import edu.nyu.cs6103.p2p.common.ThrowableUtils;
 import edu.nyu.cs6103.p2p.db.TrackerDatabase;
 import edu.nyu.cs6103.p2p.model.DownloadHistoryEntry;
 import edu.nyu.cs6103.p2p.model.SearchResult;
@@ -502,7 +504,7 @@ public class MainApp extends Application {
                 statusLabel.setText("Download failed");
                 Throwable failure = downloadTask.getException();
                 appendLog(logArea, "Download failed: " + failure.getMessage());
-                appendLog(logArea, "Root cause: " + rootCauseMessage(failure));
+                appendLog(logArea, "Root cause: " + ThrowableUtils.rootCauseMessage(failure));
                 refreshHistory();
                 shareFileButton.setDisable(false);
                 searchButton.setDisable(false);
@@ -906,13 +908,13 @@ public class MainApp extends Application {
         try (Socket socket = new Socket(host, port);
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("PING");
+            output.writeUTF(ProtocolCommands.PING);
             output.flush();
             boolean success = input.readBoolean();
             if (!success) {
                 return false;
             }
-            boolean healthy = "PONG".equals(input.readUTF());
+            boolean healthy = ProtocolCommands.PONG.equals(input.readUTF());
             if (healthy) {
                 input.readUTF();
             }
@@ -941,14 +943,6 @@ public class MainApp extends Application {
             return SIZE_FORMAT.format(mb) + " MB";
         }
         return SIZE_FORMAT.format(mb / 1024.0) + " GB";
-    }
-
-    private static String rootCauseMessage(Throwable throwable) {
-        Throwable cursor = throwable;
-        while (cursor.getCause() != null) {
-            cursor = cursor.getCause();
-        }
-        return cursor.getMessage() == null ? cursor.getClass().getSimpleName() : cursor.getMessage();
     }
 
     public static void main(String[] args) {

@@ -1,6 +1,9 @@
 package edu.nyu.cs6103.p2p.peer;
 
 import edu.nyu.cs6103.p2p.common.AppConfig;
+import edu.nyu.cs6103.p2p.common.CsvUtils;
+import edu.nyu.cs6103.p2p.common.ProtocolCommands;
+import edu.nyu.cs6103.p2p.common.ThrowableUtils;
 import edu.nyu.cs6103.p2p.db.ClientDatabase;
 import edu.nyu.cs6103.p2p.model.DownloadHistoryEntry;
 import edu.nyu.cs6103.p2p.model.PeerInfo;
@@ -167,7 +170,7 @@ public class PeerNode {
         try (Socket socket = new Socket(trackerHost, trackerPort);
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("SEARCH");
+            output.writeUTF(ProtocolCommands.SEARCH);
             output.writeUTF(query);
             output.flush();
 
@@ -285,7 +288,7 @@ public class PeerNode {
         try (Socket socket = new Socket(trackerHost, trackerPort);
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("LIST_RECORDS");
+            output.writeUTF(ProtocolCommands.LIST_RECORDS);
             output.flush();
 
             boolean success = input.readBoolean();
@@ -336,7 +339,7 @@ public class PeerNode {
         try (Socket socket = new Socket(trackerHost, trackerPort);
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("UNREGISTER_PEER");
+            output.writeUTF(ProtocolCommands.UNREGISTER_PEER);
             output.writeUTF(peerId);
             output.flush();
 
@@ -367,7 +370,7 @@ public class PeerNode {
         try (Socket socket = new Socket(trackerHost, trackerPort);
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("REGISTER");
+            output.writeUTF(ProtocolCommands.REGISTER);
             output.writeUTF(peerId);
             output.writeUTF(advertisedHost);
             output.writeInt(peerPort);
@@ -449,12 +452,12 @@ public class PeerNode {
                 if (attempt == orderedPeers.size() - 1) {
                     throw new IllegalStateException("Unable to fetch chunk " + chunkIndex + " from peers " +
                             orderedPeers.stream().map(PeerInfo::toString).reduce((a, b) -> a + ", " + b).orElse("none") +
-                            ". Last error: " + rootCauseMessage(exception), exception);
+                            ". Last error: " + ThrowableUtils.rootCauseMessage(exception), exception);
                 }
             }
         }
         throw new IllegalStateException("No peers available for chunk " + chunkIndex +
-                (lastException == null ? "" : ". Last error: " + rootCauseMessage(lastException)));
+                (lastException == null ? "" : ". Last error: " + ThrowableUtils.rootCauseMessage(lastException)));
     }
 
     private byte[] fetchChunk(PeerInfo peer, String filename, int chunkIndex) throws IOException {
@@ -465,7 +468,7 @@ public class PeerNode {
 
             try (DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
                  DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("CHUNK");
+            output.writeUTF(ProtocolCommands.CHUNK);
             output.writeUTF(filename);
             output.writeInt(chunkIndex);
             output.flush();
@@ -498,33 +501,28 @@ public class PeerNode {
         lines.add("filename,size,original_path,chunk_size,chunk_count,encrypted,updated_at,peers,chunk_records");
         for (TrackerRecord record : records) {
             lines.add(String.join(",",
-                    csv(record.filename()),
-                    csv(String.valueOf(record.size())),
-                    csv(record.originalPath()),
-                    csv(String.valueOf(record.chunkSize())),
-                    csv(String.valueOf(record.chunkCount())),
-                    csv(String.valueOf(record.encrypted())),
-                    csv(record.updatedAt()),
-                    csv(record.peers().stream().map(PeerInfo::toString).reduce((a, b) -> a + " | " + b).orElse("")),
-                    csv(record.chunkRecords().stream().map(Object::toString).reduce((a, b) -> a + " | " + b).orElse(""))
+                    CsvUtils.quote(record.filename()),
+                    CsvUtils.quote(String.valueOf(record.size())),
+                    CsvUtils.quote(record.originalPath()),
+                    CsvUtils.quote(String.valueOf(record.chunkSize())),
+                    CsvUtils.quote(String.valueOf(record.chunkCount())),
+                    CsvUtils.quote(String.valueOf(record.encrypted())),
+                    CsvUtils.quote(record.updatedAt()),
+                    CsvUtils.quote(record.peers().stream().map(PeerInfo::toString).reduce((a, b) -> a + " | " + b).orElse("")),
+                    CsvUtils.quote(record.chunkRecords().stream().map(Object::toString).reduce((a, b) -> a + " | " + b).orElse(""))
             ));
         }
         Files.write(csvPath, lines, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-    }
-
-    private static String csv(String value) {
-        String normalized = value == null ? "" : value;
-        return "\"" + normalized.replace("\"", "\"\"") + "\"";
     }
 
     private static String resolveTrackerSessionId(String host, int port) throws IOException {
         try (Socket socket = new Socket(host, port);
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("PING");
+            output.writeUTF(ProtocolCommands.PING);
             output.flush();
             boolean success = input.readBoolean();
-            if (!success || !"PONG".equals(input.readUTF())) {
+            if (!success || !ProtocolCommands.PONG.equals(input.readUTF())) {
                 throw new IOException("Tracker did not return a healthy session handshake");
             }
             return input.readUTF();
@@ -584,14 +582,6 @@ public class PeerNode {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(mode, keySpec, new GCMParameterSpec(GCM_TAG_BITS, iv));
         return cipher;
-    }
-
-    private static String rootCauseMessage(Throwable throwable) {
-        Throwable cursor = throwable;
-        while (cursor.getCause() != null) {
-            cursor = cursor.getCause();
-        }
-        return cursor.getMessage() == null ? cursor.getClass().getSimpleName() : cursor.getMessage();
     }
 
     private record SharedFileEntry(String displayName, Path servedPath, String originalPath, boolean encrypted) {

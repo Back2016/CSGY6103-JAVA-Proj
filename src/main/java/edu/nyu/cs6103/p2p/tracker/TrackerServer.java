@@ -1,5 +1,6 @@
 package edu.nyu.cs6103.p2p.tracker;
 
+import edu.nyu.cs6103.p2p.common.ProtocolCommands;
 import edu.nyu.cs6103.p2p.db.TrackerDatabase;
 import edu.nyu.cs6103.p2p.model.ChunkRecord;
 import edu.nyu.cs6103.p2p.model.PeerInfo;
@@ -65,14 +66,14 @@ public class TrackerServer {
     private void handleClient(Socket clientSocket) {
         try (clientSocket;
              DataInputStream input = new DataInputStream(new BufferedInputStream(clientSocket.getInputStream()));
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(clientSocket.getOutputStream()))) {
+            DataOutputStream output = new DataOutputStream(new BufferedOutputStream(clientSocket.getOutputStream()))) {
             String command = input.readUTF();
             switch (command) {
-                case "PING" -> handlePing(output);
-                case "REGISTER" -> handleRegister(input, output);
-                case "UNREGISTER_PEER" -> handleUnregisterPeer(input, output);
-                case "SEARCH" -> handleSearch(input, output);
-                case "LIST_RECORDS" -> handleListRecords(output);
+                case ProtocolCommands.PING -> handlePing(output);
+                case ProtocolCommands.REGISTER -> handleRegister(input, output);
+                case ProtocolCommands.UNREGISTER_PEER -> handleUnregisterPeer(input, output);
+                case ProtocolCommands.SEARCH -> handleSearch(input, output);
+                case ProtocolCommands.LIST_RECORDS -> handleListRecords(output);
                 default -> {
                     output.writeBoolean(false);
                     output.writeUTF("Unsupported tracker command: " + command);
@@ -86,7 +87,7 @@ public class TrackerServer {
 
     private void handlePing(DataOutputStream output) throws IOException {
         output.writeBoolean(true);
-        output.writeUTF("PONG");
+        output.writeUTF(ProtocolCommands.PONG);
         output.writeUTF(sessionId);
         output.flush();
     }
