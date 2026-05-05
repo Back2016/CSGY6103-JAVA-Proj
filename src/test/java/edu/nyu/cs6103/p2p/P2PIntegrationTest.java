@@ -1,9 +1,12 @@
 package edu.nyu.cs6103.p2p;
 
 import edu.nyu.cs6103.p2p.common.AppConfig;
+import edu.nyu.cs6103.p2p.common.HashingUtils;
+import edu.nyu.cs6103.p2p.common.ProtocolCommands;
 import edu.nyu.cs6103.p2p.db.TrackerDatabase;
 import edu.nyu.cs6103.p2p.model.PeerInfo;
 import edu.nyu.cs6103.p2p.model.SearchResult;
+import edu.nyu.cs6103.p2p.model.SharedFileDescriptor;
 import edu.nyu.cs6103.p2p.peer.PeerNode;
 import edu.nyu.cs6103.p2p.tracker.TrackerServer;
 import org.junit.jupiter.api.Test;
@@ -28,7 +31,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class P2PIntegrationTest {
@@ -43,6 +48,7 @@ class P2PIntegrationTest {
         Path trackerDbPath = tempDir.resolve("tracker-test.db");
         TrackerDatabase trackerDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
         startTrackerInBackground(trackerPort, trackerDatabase);
+        waitForTrackerStartup(trackerPort);
 
         PeerNode peerOne = new PeerNode(
                 "peer-one",
@@ -73,6 +79,7 @@ class P2PIntegrationTest {
         SearchResult result = waitForSearchResult(peerTwo, "sample.txt");
         assertNotNull(result);
         assertEquals("sample.txt", result.filename());
+        assertEquals(HashingUtils.sha256(sharedFile), result.fileId());
         assertFalse(result.peers().isEmpty());
 
         AtomicReference<String> lastStatus = new AtomicReference<>("pending");
@@ -82,6 +89,56 @@ class P2PIntegrationTest {
         assertEquals(content, Files.readString(downloaded));
         assertEquals("Download complete", lastStatus.get());
         assertFalse(peerTwo.getDownloadHistory().isEmpty());
+    }
+
+    @Test
+    void sameFilenameDifferentContent_shouldReturnSeparateSearchResults() throws Exception {
+        int trackerPort = findFreePort();
+        int peerOnePort = findFreePort();
+        int peerTwoPort = findFreePort();
+        Path trackerDbPath = tempDir.resolve("same-name-test.db");
+        TrackerDatabase trackerDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
+        startTrackerInBackground(trackerPort, trackerDatabase);
+        waitForTrackerStartup(trackerPort);
+
+        PeerNode peerOne = new PeerNode(
+                "peer-one",
+                "localhost",
+                trackerPort,
+                peerOnePort,
+                tempDir.resolve("same-name-peer-one-records"),
+                tempDir.resolve("same-name-peer-one-downloads")
+        );
+        PeerNode peerTwo = new PeerNode(
+                "peer-two",
+                "localhost",
+                trackerPort,
+                peerTwoPort,
+                tempDir.resolve("same-name-peer-two-records"),
+                tempDir.resolve("same-name-peer-two-downloads")
+        );
+
+        peerOne.startServer();
+        peerTwo.startServer();
+
+        Path peerOneDir = tempDir.resolve("same-name-peer-one");
+        Path peerTwoDir = tempDir.resolve("same-name-peer-two");
+        Files.createDirectories(peerOneDir);
+        Files.createDirectories(peerTwoDir);
+        Path peerOneFile = peerOneDir.resolve("shared.txt");
+        Path peerTwoFile = peerTwoDir.resolve("shared.txt");
+        Files.writeString(peerOneFile, "peer-one-content".repeat(10_000));
+        Files.writeString(peerTwoFile, "peer-two-content".repeat(10_000));
+
+        peerOne.shareFile(peerOneFile);
+        peerTwo.shareFile(peerTwoFile);
+
+        List<SearchResult> results = waitForSearchResults(peerOne, "shared.txt", 2);
+        assertEquals(2, results.size());
+        assertNotEquals(results.get(0).fileId(), results.get(1).fileId());
+        assertEquals(1, results.get(0).peers().size());
+        assertEquals(1, results.get(1).peers().size());
+        assertNotEquals(results.get(0).peers().get(0).peerId(), results.get(1).peers().get(0).peerId());
     }
 
     @Test
@@ -102,11 +159,13 @@ class P2PIntegrationTest {
         );
 
         byte[] content = buildBytes(AppConfig.DEFAULT_CHUNK_SIZE * 2 + 1024);
-        CountingChunkServer healthyPeer = new CountingChunkServer(healthyPeerPort, "retry.bin", content, false);
+        String fileId = HashingUtils.sha256Hex(content);
+        CountingChunkServer healthyPeer = new CountingChunkServer(healthyPeerPort, fileId, content, false);
         healthyPeer.start();
 
         SearchResult result = new SearchResult(
                 "retry.bin",
+                fileId,
                 content.length,
                 AppConfig.DEFAULT_CHUNK_SIZE,
                 (int) Math.ceil((double) content.length / AppConfig.DEFAULT_CHUNK_SIZE),
@@ -142,13 +201,15 @@ class P2PIntegrationTest {
         );
 
         byte[] content = buildBytes(AppConfig.DEFAULT_CHUNK_SIZE * 4 + 4096);
-        CountingChunkServer peerOne = new CountingChunkServer(peerOnePort, "multi.bin", content, false);
-        CountingChunkServer peerTwo = new CountingChunkServer(peerTwoPort, "multi.bin", content, false);
+        String fileId = HashingUtils.sha256Hex(content);
+        CountingChunkServer peerOne = new CountingChunkServer(peerOnePort, fileId, content, false);
+        CountingChunkServer peerTwo = new CountingChunkServer(peerTwoPort, fileId, content, false);
         peerOne.start();
         peerTwo.start();
 
         SearchResult result = new SearchResult(
                 "multi.bin",
+                fileId,
                 content.length,
                 AppConfig.DEFAULT_CHUNK_SIZE,
                 (int) Math.ceil((double) content.length / AppConfig.DEFAULT_CHUNK_SIZE),
@@ -171,14 +232,16 @@ class P2PIntegrationTest {
     void trackerStartupClearsPreviouslyRegisteredFiles() throws Exception {
         Path trackerDbPath = tempDir.resolve("tracker-restart.db");
         TrackerDatabase staleDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
-        staleDatabase.registerSharedFile("stale.txt", 128, AppConfig.DEFAULT_CHUNK_SIZE, 1,
-                tempDir.resolve("stale.txt").toString(), false,
+        staleDatabase.registerSharedFile(
+                new SharedFileDescriptor("stale-file-id", "stale.txt", 128, AppConfig.DEFAULT_CHUNK_SIZE, 1, false),
+                tempDir.resolve("stale.txt").toString(),
                 "old-peer", "localhost", 6060);
         assertEquals(1, staleDatabase.searchFiles("stale").size());
 
         int trackerPort = findFreePort();
         TrackerDatabase restartedDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
         startTrackerInBackground(trackerPort, restartedDatabase);
+        waitForTrackerStartup(trackerPort);
 
         PeerNode peer = new PeerNode(
                 "searcher",
@@ -201,6 +264,49 @@ class P2PIntegrationTest {
             }
         }
         assertTrue(peer.search("stale").isEmpty());
+    }
+
+    @Test
+    void hashMismatchFromPeerContent_shouldFailDownload() throws Exception {
+        int downloaderPort = findFreePort();
+        int badPeerPort = findFreePort();
+        int goodPeerPort = findFreePort();
+
+        PeerNode downloader = new PeerNode(
+                "downloader",
+                "localhost",
+                findFreePort(),
+                "test-session-hash-mismatch",
+                downloaderPort,
+                "127.0.0.1",
+                tempDir.resolve("hash-mismatch-records"),
+                tempDir.resolve("hash-mismatch-downloads")
+        );
+
+        byte[] expectedContent = buildBytes(AppConfig.DEFAULT_CHUNK_SIZE * 2);
+        byte[] corruptedContent = buildCorruptedBytes(expectedContent);
+        String expectedFileId = HashingUtils.sha256Hex(expectedContent);
+
+        CountingChunkServer badPeer = new CountingChunkServer(badPeerPort, expectedFileId, corruptedContent, false);
+        CountingChunkServer goodPeer = new CountingChunkServer(goodPeerPort, expectedFileId, expectedContent, false);
+        badPeer.start();
+        goodPeer.start();
+
+        SearchResult result = new SearchResult(
+                "corrupt.bin",
+                expectedFileId,
+                expectedContent.length,
+                AppConfig.DEFAULT_CHUNK_SIZE,
+                (int) Math.ceil((double) expectedContent.length / AppConfig.DEFAULT_CHUNK_SIZE),
+                false,
+                List.of(
+                        new PeerInfo("peer-a", "localhost", badPeerPort),
+                        new PeerInfo("peer-b", "localhost", goodPeerPort)
+                )
+        );
+
+        IOException exception = assertThrows(IOException.class, () -> downloader.download(result, progress -> { }, status -> { }));
+        assertTrue(exception.getMessage().contains("fileId"));
     }
 
     private static void startTrackerInBackground(int trackerPort, TrackerDatabase trackerDatabase) {
@@ -227,10 +333,41 @@ class P2PIntegrationTest {
         return null;
     }
 
+    private static List<SearchResult> waitForSearchResults(PeerNode peerNode, String query, int expectedCount) throws Exception {
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (System.nanoTime() < deadline) {
+            List<SearchResult> results = peerNode.search(query);
+            if (results.size() >= expectedCount) {
+                return results;
+            }
+            Thread.sleep(100);
+        }
+        return peerNode.search(query);
+    }
+
     private static int findFreePort() throws IOException {
         try (ServerSocket socket = new ServerSocket(0)) {
             return socket.getLocalPort();
         }
+    }
+
+    private static void waitForTrackerStartup(int port) throws Exception {
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (System.nanoTime() < deadline) {
+            try (Socket socket = new Socket("localhost", port);
+                 DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+                 DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
+                output.writeUTF(ProtocolCommands.PING);
+                output.flush();
+                if (input.readBoolean() && ProtocolCommands.PONG.equals(input.readUTF())) {
+                    input.readUTF();
+                    return;
+                }
+            } catch (IOException ignored) {
+                Thread.sleep(50);
+            }
+        }
+        throw new IOException("Tracker did not start listening on port " + port);
     }
 
     private static byte[] buildBytes(int length) {
@@ -241,16 +378,24 @@ class P2PIntegrationTest {
         return bytes;
     }
 
+    private static byte[] buildCorruptedBytes(byte[] source) {
+        byte[] corrupted = source.clone();
+        for (int index = 0; index < corrupted.length; index += 2) {
+            corrupted[index] = (byte) (corrupted[index] ^ 0x0F);
+        }
+        return corrupted;
+    }
+
     private static final class CountingChunkServer {
         private final int port;
-        private final String filename;
+        private final String fileId;
         private final byte[] content;
         private final boolean failAllRequests;
         private final Map<Integer, Integer> servedChunks = new ConcurrentHashMap<>();
 
-        private CountingChunkServer(int port, String filename, byte[] content, boolean failAllRequests) {
+        private CountingChunkServer(int port, String fileId, byte[] content, boolean failAllRequests) {
             this.port = port;
-            this.filename = filename;
+            this.fileId = fileId;
             this.content = content;
             this.failAllRequests = failAllRequests;
         }
@@ -275,16 +420,16 @@ class P2PIntegrationTest {
                  DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
                  DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()))) {
                 String command = input.readUTF();
-                if (!"CHUNK".equals(command)) {
+                if (!ProtocolCommands.CHUNK.equals(command)) {
                     output.writeBoolean(false);
                     output.writeUTF("Unsupported command");
                     output.flush();
                     return;
                 }
 
-                String requestedFilename = input.readUTF();
+                String requestedFileId = input.readUTF();
                 int chunkIndex = input.readInt();
-                if (failAllRequests || !filename.equals(requestedFilename)) {
+                if (failAllRequests || !fileId.equals(requestedFileId)) {
                     output.writeBoolean(false);
                     output.writeUTF("Chunk unavailable");
                     output.flush();

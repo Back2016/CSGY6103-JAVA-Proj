@@ -3,6 +3,7 @@ package edu.nyu.cs6103.p2p.model;
 import java.util.List;
 
 public record SearchResult(String filename,
+                           String fileId,
                            long size,
                            int chunkSize,
                            int chunkCount,
@@ -10,7 +11,7 @@ public record SearchResult(String filename,
                            List<PeerInfo> peers) {
     @Override
     public String toString() {
-        return filename + " (" + size + " bytes, " + peers.size() + " peer(s), " + chunkCount + " chunks" +
+        return filename + " [" + fileId + "] (" + size + " bytes, " + peers.size() + " peer(s), " + chunkCount + " chunks" +
                 (encrypted ? ", encrypted" : "") + ")";
     }
 }

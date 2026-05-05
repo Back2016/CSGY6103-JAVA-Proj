@@ -20,10 +20,16 @@ public final class HashingUtils {
                 digest.update(buffer, 0, read);
             }
         }
-        return sha256Hex(digest.digest());
+        return toHex(digest.digest());
     }
 
     public static String sha256Hex(byte[] bytes) {
+        MessageDigest digest = newSha256Digest();
+        digest.update(bytes);
+        return toHex(digest.digest());
+    }
+
+    private static String toHex(byte[] bytes) {
         StringBuilder builder = new StringBuilder(bytes.length * 2);
         for (byte value : bytes) {
             builder.append(Character.forDigit((value >> 4) & 0xF, 16));

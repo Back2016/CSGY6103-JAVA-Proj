@@ -5,6 +5,7 @@ import edu.nyu.cs6103.p2p.db.TrackerDatabase;
 import edu.nyu.cs6103.p2p.model.ChunkRecord;
 import edu.nyu.cs6103.p2p.model.PeerInfo;
 import edu.nyu.cs6103.p2p.model.SearchResult;
+import edu.nyu.cs6103.p2p.model.SharedFileDescriptor;
 import edu.nyu.cs6103.p2p.model.TrackerRecord;
 
 import java.io.BufferedInputStream;
@@ -96,6 +97,7 @@ public class TrackerServer {
         String peerId = input.readUTF();
         String host = input.readUTF();
         int peerPort = input.readInt();
+        String fileId = input.readUTF();
         String filename = input.readUTF();
         long size = input.readLong();
         int chunkSize = input.readInt();
@@ -103,7 +105,13 @@ public class TrackerServer {
         String originalPath = input.readUTF();
         boolean encrypted = input.readBoolean();
 
-        database.registerSharedFile(filename, size, chunkSize, chunkCount, originalPath, encrypted, peerId, host, peerPort);
+        database.registerSharedFile(
+                new SharedFileDescriptor(fileId, filename, size, chunkSize, chunkCount, encrypted),
+                originalPath,
+                peerId,
+                host,
+                peerPort
+        );
 
         output.writeBoolean(true);
         output.writeUTF("Registered " + filename);
@@ -124,6 +132,7 @@ public class TrackerServer {
         output.writeBoolean(true);
         output.writeInt(results.size());
         for (SearchResult result : results) {
+            output.writeUTF(result.fileId());
             output.writeUTF(result.filename());
             output.writeLong(result.size());
             output.writeInt(result.chunkSize());
@@ -144,6 +153,7 @@ public class TrackerServer {
         output.writeBoolean(true);
         output.writeInt(records.size());
         for (TrackerRecord record : records) {
+            output.writeUTF(record.fileId());
             output.writeUTF(record.filename());
             output.writeLong(record.size());
             output.writeUTF(record.originalPath() == null ? "" : record.originalPath());

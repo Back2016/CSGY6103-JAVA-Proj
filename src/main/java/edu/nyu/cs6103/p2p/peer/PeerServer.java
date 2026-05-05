@@ -89,11 +89,11 @@ public class PeerServer {
     }
 
     private void handleManifest(DataInputStream input, DataOutputStream output) throws IOException {
-        String filename = input.readUTF();
-        Path path = peerNode.getSharedFile(filename);
+        String fileId = input.readUTF();
+        Path path = peerNode.getSharedFile(fileId);
         if (path == null || !Files.exists(path)) {
             output.writeBoolean(false);
-            output.writeUTF("File not found: " + filename);
+            output.writeUTF("File not found for fileId: " + fileId);
             output.flush();
             return;
         }
@@ -108,12 +108,12 @@ public class PeerServer {
     }
 
     private void handleChunk(DataInputStream input, DataOutputStream output) throws IOException {
-        String filename = input.readUTF();
+        String fileId = input.readUTF();
         int chunkIndex = input.readInt();
-        Path path = peerNode.getSharedFile(filename);
+        Path path = peerNode.getSharedFile(fileId);
         if (path == null || !Files.exists(path)) {
             output.writeBoolean(false);
-            output.writeUTF("File not found: " + filename);
+            output.writeUTF("File not found for fileId: " + fileId);
             output.flush();
             return;
         }
