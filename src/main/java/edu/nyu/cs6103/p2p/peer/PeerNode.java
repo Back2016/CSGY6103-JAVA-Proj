@@ -11,6 +11,7 @@ import edu.nyu.cs6103.p2p.model.PeerInfo;
 import edu.nyu.cs6103.p2p.model.SearchResult;
 import edu.nyu.cs6103.p2p.model.SharedFileDescriptor;
 import edu.nyu.cs6103.p2p.model.TrackerRecord;
+import edu.nyu.cs6103.p2p.tracker.TrackerClient;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -80,6 +81,7 @@ public class PeerNode {
     private final Path encryptedFilesDirectory;
     private final Path downloadsDirectory;
     private final ClientDatabase clientDatabase;
+    private final TrackerClient trackerClient;
     private final Map<String, SharedFileEntry> sharedFiles = new ConcurrentHashMap<>();
     private final PeerServer peerServer;
     private volatile String peerSessionToken;
@@ -117,11 +119,12 @@ public class PeerNode {
         this.peerId = peerId;
         this.trackerHost = trackerHost;
         this.trackerPort = trackerPort;
-        this.trackerSessionId = trackerSessionId;
         this.peerPort = peerPort;
         this.advertisedHost = advertisedHost;
         this.trackerRecordsDirectory = trackerRecordsDirectory;
         this.downloadsDirectory = downloadsDirectory;
+        this.trackerClient = new TrackerClient(trackerHost, trackerPort);
+        this.trackerSessionId = trackerSessionId;
         String sessionSlug = sanitizeForPath(trackerHost + "_" + trackerPort + "_" + trackerSessionId);
         this.sessionDirectory = trackerRecordsDirectory.resolve(sessionSlug);
         this.encryptedFilesDirectory = sessionDirectory.resolve("shared_encrypted");
@@ -195,36 +198,7 @@ public class PeerNode {
     }
 
     public List<SearchResult> search(String query) throws IOException {
-        try (Socket socket = openTrackerSocket();
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF(ProtocolCommands.SEARCH);
-            output.writeUTF(query);
-            output.flush();
-
-            boolean success = input.readBoolean();
-            if (!success) {
-                throw new IOException(input.readUTF());
-            }
-
-            int resultCount = input.readInt();
-            List<SearchResult> results = new ArrayList<>();
-            for (int i = 0; i < resultCount; i++) {
-                String fileId = input.readUTF();
-                String filename = input.readUTF();
-                long size = input.readLong();
-                int chunkSize = input.readInt();
-                int chunkCount = input.readInt();
-                boolean encrypted = input.readBoolean();
-                int peerCount = input.readInt();
-                List<PeerInfo> peers = new ArrayList<>();
-                for (int peerIndex = 0; peerIndex < peerCount; peerIndex++) {
-                    peers.add(new PeerInfo(input.readUTF(), input.readUTF(), input.readInt()));
-                }
-                results.add(new SearchResult(filename, fileId, size, chunkSize, chunkCount, encrypted, peers));
-            }
-            return results;
-        }
+        return trackerClient.search(query);
     }
 
     public Path download(SearchResult result, DoubleConsumer progressCallback, Consumer<String> statusCallback) throws IOException {
@@ -322,46 +296,9 @@ public class PeerNode {
     }
 
     public List<TrackerRecord> fetchTrackerRecords() throws IOException {
-        try (Socket socket = openTrackerSocket();
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF(ProtocolCommands.LIST_RECORDS);
-            output.flush();
-
-            boolean success = input.readBoolean();
-            if (!success) {
-                throw new IOException(input.readUTF());
-            }
-
-            int recordCount = input.readInt();
-            List<TrackerRecord> records = new ArrayList<>();
-            for (int index = 0; index < recordCount; index++) {
-                String fileId = input.readUTF();
-                String filename = input.readUTF();
-                long size = input.readLong();
-                int chunkSize = input.readInt();
-                int chunkCount = input.readInt();
-                boolean encrypted = input.readBoolean();
-                String updatedAt = input.readUTF();
-                int peerCount = input.readInt();
-                List<PeerInfo> peers = new ArrayList<>();
-                for (int peerIndex = 0; peerIndex < peerCount; peerIndex++) {
-                    peers.add(new PeerInfo(input.readUTF(), input.readUTF(), input.readInt()));
-                }
-                int chunkRecordCount = input.readInt();
-                List<edu.nyu.cs6103.p2p.model.ChunkRecord> chunkRecords = new ArrayList<>();
-                for (int chunkIndex = 0; chunkIndex < chunkRecordCount; chunkIndex++) {
-                    chunkRecords.add(new edu.nyu.cs6103.p2p.model.ChunkRecord(
-                            input.readInt(),
-                            input.readLong(),
-                            input.readInt()
-                    ));
-                }
-                records.add(new TrackerRecord(filename, fileId, size, chunkSize, chunkCount, encrypted, updatedAt, peers, chunkRecords));
-            }
-            writeTrackerRecordsCsv(records);
-            return records;
-        }
+        List<TrackerRecord> records = trackerClient.listRecords();
+        writeTrackerRecordsCsv(records);
+        return records;
     }
 
     public String describeRemotePeers(SearchResult result) {
@@ -378,19 +315,7 @@ public class PeerNode {
             clearSharedFiles();
             return;
         }
-        try (Socket socket = openTrackerSocket();
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF(ProtocolCommands.DISCONNECT);
-            output.writeUTF(sessionToken);
-            output.flush();
-
-            boolean success = input.readBoolean();
-            if (!success) {
-                throw new IOException(input.readUTF());
-            }
-            input.readUTF();
-        }
+        trackerClient.disconnect(sessionToken);
         peerSessionToken = null;
         clearSharedFiles();
     }
@@ -412,25 +337,7 @@ public class PeerNode {
         if (sessionToken == null) {
             throw new IOException("Peer session is not established");
         }
-        try (Socket socket = openTrackerSocket();
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF(ProtocolCommands.REGISTER);
-            output.writeUTF(sessionToken);
-            output.writeUTF(entry.descriptor().fileId());
-            output.writeUTF(entry.descriptor().filename());
-            output.writeLong(entry.descriptor().size());
-            output.writeInt(entry.descriptor().chunkSize());
-            output.writeInt(entry.descriptor().chunkCount());
-            output.writeBoolean(entry.descriptor().encrypted());
-            output.flush();
-
-            boolean success = input.readBoolean();
-            if (!success) {
-                throw new IOException(input.readUTF());
-            }
-            input.readUTF();
-        }
+        trackerClient.register(sessionToken, entry.descriptor());
     }
 
     public static String suggestAdvertisedHost() throws IOException {
@@ -571,28 +478,7 @@ public class PeerNode {
     }
 
     private static String resolveTrackerSessionId(String host, int port) throws IOException {
-        try (Socket socket = openSocket(host, port);
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF(ProtocolCommands.PING);
-            output.flush();
-            boolean success = input.readBoolean();
-            if (!success || !ProtocolCommands.PONG.equals(input.readUTF())) {
-                throw new IOException("Tracker did not return a healthy session handshake");
-            }
-            return input.readUTF();
-        }
-    }
-
-    private Socket openTrackerSocket() throws IOException {
-        return openSocket(trackerHost, trackerPort);
-    }
-
-    private static Socket openSocket(String host, int port) throws IOException {
-        Socket socket = new Socket();
-        socket.connect(new InetSocketAddress(host, port), SOCKET_CONNECT_TIMEOUT_MS);
-        socket.setSoTimeout(SOCKET_READ_TIMEOUT_MS);
-        return socket;
+        return new TrackerClient(host, port).ping();
     }
 
     private static int expectedChunkLength(SearchResult result, int chunkIndex) {
@@ -638,21 +524,7 @@ public class PeerNode {
     }
 
     private String openPeerSession() throws IOException {
-        try (Socket socket = openTrackerSocket();
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF(ProtocolCommands.HELLO);
-            output.writeUTF(peerId);
-            output.writeUTF(advertisedHost);
-            output.writeInt(peerPort);
-            output.flush();
-
-            boolean success = input.readBoolean();
-            if (!success) {
-                throw new IOException(input.readUTF());
-            }
-            return input.readUTF();
-        }
+        return trackerClient.hello(peerId, advertisedHost, peerPort);
     }
 
     private void startHeartbeatLoop() {
@@ -683,19 +555,7 @@ public class PeerNode {
         if (sessionToken == null) {
             return;
         }
-        try (Socket socket = openTrackerSocket();
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF(ProtocolCommands.HEARTBEAT);
-            output.writeUTF(sessionToken);
-            output.flush();
-
-            boolean success = input.readBoolean();
-            if (!success) {
-                throw new IOException(input.readUTF());
-            }
-            input.readUTF();
-        }
+        trackerClient.heartbeat(sessionToken);
     }
 
     private void encryptFile(Path inputFile, Path outputFile, String password) throws IOException {
