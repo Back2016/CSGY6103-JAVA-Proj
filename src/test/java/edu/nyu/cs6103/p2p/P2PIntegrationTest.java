@@ -102,7 +102,7 @@ class P2PIntegrationTest {
     }
 
     @Test
-    void zeroByteFileDownload_shouldCompleteWithoutThreadPoolErrors() throws Exception {
+    void zeroByteFile_shouldShareAndDownload() throws Exception {
         int trackerPort = findFreePort();
         int peerOnePort = findFreePort();
         int peerTwoPort = findFreePort();
@@ -198,6 +198,53 @@ class P2PIntegrationTest {
         assertEquals(1, results.get(0).peers().size());
         assertEquals(1, results.get(1).peers().size());
         assertNotEquals(results.get(0).peers().get(0).peerId(), results.get(1).peers().get(0).peerId());
+    }
+
+    @Test
+    void samePlaintextDifferentEncryption_shouldNotMergeResults() throws Exception {
+        int trackerPort = findFreePort();
+        int peerOnePort = findFreePort();
+        int peerTwoPort = findFreePort();
+        Path trackerDbPath = tempDir.resolve("same-plaintext-encryption-test.db");
+        TrackerDatabase trackerDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
+        startTrackerInBackground(trackerPort, trackerDatabase);
+        waitForTrackerStartup(trackerPort);
+
+        PeerNode peerOne = new PeerNode(
+                "peer-one",
+                "localhost",
+                trackerPort,
+                peerOnePort,
+                tempDir.resolve("same-plaintext-peer-one-records"),
+                tempDir.resolve("same-plaintext-peer-one-downloads")
+        );
+        PeerNode peerTwo = new PeerNode(
+                "peer-two",
+                "localhost",
+                trackerPort,
+                peerTwoPort,
+                tempDir.resolve("same-plaintext-peer-two-records"),
+                tempDir.resolve("same-plaintext-peer-two-downloads")
+        );
+
+        peerOne.startServer();
+        peerTwo.startServer();
+
+        Path sharedFile = tempDir.resolve("same-plaintext.txt");
+        String content = "identical-plaintext".repeat(10_000);
+        Files.writeString(sharedFile, content);
+
+        peerOne.shareFile(sharedFile);
+        peerTwo.shareFile(sharedFile, "secret-password");
+
+        List<SearchResult> results = waitForSearchResults(peerOne, "same-plaintext.txt", 2);
+        assertEquals(2, results.size());
+        assertEquals("same-plaintext.txt", results.get(0).filename());
+        assertEquals("same-plaintext.txt", results.get(1).filename());
+        assertNotEquals(results.get(0).fileId(), results.get(1).fileId());
+        assertNotEquals(results.get(0).encrypted(), results.get(1).encrypted());
+        assertTrue(results.stream().anyMatch(SearchResult::encrypted));
+        assertTrue(results.stream().anyMatch(result -> !result.encrypted()));
     }
 
     @Test
@@ -326,10 +373,11 @@ class P2PIntegrationTest {
     }
 
     @Test
-    void hashMismatchFromPeerContent_shouldFailDownload() throws Exception {
+    void hashMismatch_shouldFailDownload() throws Exception {
         int downloaderPort = findFreePort();
         int badPeerPort = findFreePort();
         int goodPeerPort = findFreePort();
+        Path downloadsDir = tempDir.resolve("hash-mismatch-downloads");
 
         PeerNode downloader = new PeerNode(
                 "downloader",
@@ -339,7 +387,7 @@ class P2PIntegrationTest {
                 downloaderPort,
                 "127.0.0.1",
                 tempDir.resolve("hash-mismatch-records"),
-                tempDir.resolve("hash-mismatch-downloads")
+                downloadsDir
         );
 
         byte[] expectedContent = buildBytes(AppConfig.DEFAULT_CHUNK_SIZE * 2);
@@ -364,8 +412,57 @@ class P2PIntegrationTest {
                 )
         );
 
+        Path expectedDownload = downloadsDir.resolve("corrupt.bin");
         IOException exception = assertThrows(IOException.class, () -> downloader.download(result, progress -> { }, status -> { }));
         assertTrue(exception.getMessage().contains("fileId"));
+        assertDownloadArtifactsAbsent(expectedDownload);
+    }
+
+    @Test
+    void wrongPassword_shouldFailAndCleanupFiles() throws Exception {
+        int trackerPort = findFreePort();
+        int peerOnePort = findFreePort();
+        int peerTwoPort = findFreePort();
+        Path downloadsDir = tempDir.resolve("wrong-password-downloads");
+        Path trackerDbPath = tempDir.resolve("wrong-password.db");
+        TrackerDatabase trackerDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
+        startTrackerInBackground(trackerPort, trackerDatabase);
+        waitForTrackerStartup(trackerPort);
+
+        PeerNode peerOne = new PeerNode(
+                "peer-one",
+                "localhost",
+                trackerPort,
+                peerOnePort,
+                tempDir.resolve("wrong-password-peer-one-records"),
+                tempDir.resolve("wrong-password-peer-one-downloads")
+        );
+        PeerNode peerTwo = new PeerNode(
+                "peer-two",
+                "localhost",
+                trackerPort,
+                peerTwoPort,
+                tempDir.resolve("wrong-password-peer-two-records"),
+                downloadsDir
+        );
+
+        peerOne.startServer();
+        peerTwo.startServer();
+
+        Path sharedFile = tempDir.resolve("encrypted.txt");
+        Files.writeString(sharedFile, "encrypted-content".repeat(50_000));
+
+        peerOne.shareFile(sharedFile, "correct-password");
+
+        SearchResult result = waitForSearchResult(peerTwo, "encrypted.txt");
+        assertNotNull(result);
+        assertTrue(result.encrypted());
+
+        Path expectedDownload = downloadsDir.resolve("encrypted.txt");
+        IOException exception = assertThrows(IOException.class, () ->
+                peerTwo.download(result, "wrong-password", progress -> { }, status -> { }));
+        assertTrue(exception.getMessage().contains("decrypt"));
+        assertDownloadArtifactsAbsent(expectedDownload);
     }
 
     @Test
@@ -387,7 +484,7 @@ class P2PIntegrationTest {
     }
 
     @Test
-    void failedEncryptedShare_shouldCleanTemporaryCopyAndAvoidDirtyMapping() throws Exception {
+    void shareRegistrationFailure_shouldRollbackEncryptedTempFile() throws Exception {
         int trackerPort = findFreePort();
         Path trackerDbPath = tempDir.resolve("share-cleanup.db");
         TrackerDatabase trackerDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
@@ -430,7 +527,7 @@ class P2PIntegrationTest {
     }
 
     @Test
-    void disconnectWithoutValidSessionToken_shouldBeRejected() throws Exception {
+    void disconnectWithoutValidSession_shouldBeRejected() throws Exception {
         int trackerPort = findFreePort();
         Path trackerDbPath = tempDir.resolve("invalid-disconnect.db");
         TrackerDatabase trackerDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
@@ -444,7 +541,7 @@ class P2PIntegrationTest {
     }
 
     @Test
-    void expiredPeerSession_shouldDisappearFromSearchResults() throws Exception {
+    void expiredPeer_shouldDisappearFromSearchResults() throws Exception {
         int trackerPort = findFreePort();
         Path trackerDbPath = tempDir.resolve("expired-session.db");
         TrackerDatabase trackerDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
@@ -600,6 +697,11 @@ class P2PIntegrationTest {
 
             return new TrackerResponse(input.readBoolean(), input.readUTF());
         }
+    }
+
+    private static void assertDownloadArtifactsAbsent(Path expectedDownload) throws IOException {
+        assertFalse(Files.exists(expectedDownload));
+        assertFalse(Files.exists(expectedDownload.resolveSibling(expectedDownload.getFileName() + ".p2pdownload")));
     }
 
     private static byte[] buildBytes(int length) {
