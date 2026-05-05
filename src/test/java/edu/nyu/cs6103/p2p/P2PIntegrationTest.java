@@ -245,7 +245,6 @@ class P2PIntegrationTest {
         String staleSessionToken = staleDatabase.openPeerSession("old-peer", "localhost", 6060);
         staleDatabase.registerSharedFile(
                 new SharedFileDescriptor("stale-file-id", "stale.txt", 128, AppConfig.DEFAULT_CHUNK_SIZE, 1, false),
-                tempDir.resolve("stale.txt").toString(),
                 staleSessionToken);
         assertEquals(1, staleDatabase.searchFiles("stale").size());
 
@@ -331,8 +330,7 @@ class P2PIntegrationTest {
         TrackerResponse response = sendRegisterRequest(
                 trackerPort,
                 "invalid-session-token",
-                new SharedFileDescriptor("invalid-file-id", "invalid.txt", 64, AppConfig.DEFAULT_CHUNK_SIZE, 1, false),
-                tempDir.resolve("invalid.txt").toString()
+                new SharedFileDescriptor("invalid-file-id", "invalid.txt", 64, AppConfig.DEFAULT_CHUNK_SIZE, 1, false)
         );
 
         assertFalse(response.success());
@@ -371,7 +369,7 @@ class P2PIntegrationTest {
                 (int) Math.ceil((double) content.length / AppConfig.DEFAULT_CHUNK_SIZE),
                 false
         );
-        TrackerResponse registerResponse = sendRegisterRequest(trackerPort, sessionToken, descriptor, tempDir.resolve("expiring.txt").toString());
+        TrackerResponse registerResponse = sendRegisterRequest(trackerPort, sessionToken, descriptor);
         assertTrue(registerResponse.success());
 
         PeerNode searcher = new PeerNode(
@@ -482,8 +480,7 @@ class P2PIntegrationTest {
 
     private static TrackerResponse sendRegisterRequest(int trackerPort,
                                                        String sessionToken,
-                                                       SharedFileDescriptor descriptor,
-                                                       String originalPath) throws IOException {
+                                                       SharedFileDescriptor descriptor) throws IOException {
         try (Socket socket = new Socket("localhost", trackerPort);
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
@@ -494,7 +491,6 @@ class P2PIntegrationTest {
             output.writeLong(descriptor.size());
             output.writeInt(descriptor.chunkSize());
             output.writeInt(descriptor.chunkCount());
-            output.writeUTF(originalPath);
             output.writeBoolean(descriptor.encrypted());
             output.flush();
 

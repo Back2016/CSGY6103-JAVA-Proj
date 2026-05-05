@@ -44,7 +44,6 @@ public class TrackerDatabase {
                     size INTEGER NOT NULL,
                     chunk_size INTEGER NOT NULL,
                     chunk_count INTEGER NOT NULL,
-                    original_path TEXT NOT NULL DEFAULT '',
                     encrypted INTEGER NOT NULL DEFAULT 0,
                     session_token TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -67,6 +66,7 @@ public class TrackerDatabase {
     private boolean needsSchemaRebuild(Connection connection) throws SQLException {
         return !hasColumn(connection, "shared_files", "session_token")
                 || !hasColumn(connection, "shared_files", "file_id")
+                || hasColumn(connection, "shared_files", "original_path")
                 || !hasTable(connection, "peer_sessions");
     }
 
@@ -131,18 +131,16 @@ public class TrackerDatabase {
     }
 
     public synchronized void registerSharedFile(SharedFileDescriptor descriptor,
-                                                String originalPath,
                                                 String sessionToken) {
         String sql = """
-                INSERT INTO shared_files (file_id, filename, size, chunk_size, chunk_count, original_path, encrypted, session_token, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO shared_files (file_id, filename, size, chunk_size, chunk_count, encrypted, session_token, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(file_id, session_token)
                 DO UPDATE SET
                     filename = excluded.filename,
                     size = excluded.size,
                     chunk_size = excluded.chunk_size,
                     chunk_count = excluded.chunk_count,
-                    original_path = excluded.original_path,
                     encrypted = excluded.encrypted,
                     updated_at = excluded.updated_at;
                 """;
@@ -154,10 +152,9 @@ public class TrackerDatabase {
             statement.setLong(3, descriptor.size());
             statement.setInt(4, descriptor.chunkSize());
             statement.setInt(5, descriptor.chunkCount());
-            statement.setString(6, originalPath);
-            statement.setInt(7, descriptor.encrypted() ? 1 : 0);
-            statement.setString(8, sessionToken);
-            statement.setString(9, LocalDateTime.now().toString());
+            statement.setInt(6, descriptor.encrypted() ? 1 : 0);
+            statement.setString(7, sessionToken);
+            statement.setString(8, LocalDateTime.now().toString());
             statement.executeUpdate();
         } catch (SQLException exception) {
             throw new IllegalStateException("Failed to register file " + descriptor.filename(), exception);
@@ -249,7 +246,7 @@ public class TrackerDatabase {
 
     public synchronized List<TrackerRecord> listTrackerRecords() {
         String sql = """
-                SELECT sf.file_id, sf.filename, sf.size, sf.chunk_size, sf.chunk_count, MIN(sf.original_path) AS original_path,
+                SELECT sf.file_id, sf.filename, sf.size, sf.chunk_size, sf.chunk_count,
                        MAX(sf.encrypted) AS encrypted, MAX(sf.updated_at) AS updated_at
                 FROM shared_files sf
                 JOIN peer_sessions ps ON ps.session_token = sf.session_token
@@ -272,7 +269,6 @@ public class TrackerDatabase {
                         filename,
                         fileId,
                         size,
-                        resultSet.getString("original_path"),
                         chunkSize,
                         chunkCount,
                         resultSet.getInt("encrypted") == 1,

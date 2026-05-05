@@ -5,7 +5,6 @@ import java.util.List;
 public record TrackerRecord(String filename,
                             String fileId,
                             long size,
-                            String originalPath,
                             int chunkSize,
                             int chunkCount,
                             boolean encrypted,
@@ -15,7 +14,6 @@ public record TrackerRecord(String filename,
     @Override
     public String toString() {
         return filename + " | " + fileId + " | " + size + " bytes | " + chunkCount + " chunks | " +
-                peers.size() + " peer(s)" + (encrypted ? " | encrypted" : "") +
-                (originalPath == null || originalPath.isBlank() ? "" : " | " + originalPath);
+                peers.size() + " peer(s)" + (encrypted ? " | encrypted" : "");
     }
 }

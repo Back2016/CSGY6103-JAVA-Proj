@@ -142,13 +142,11 @@ public class TrackerServer {
         long size = input.readLong();
         int chunkSize = input.readInt();
         int chunkCount = input.readInt();
-        String originalPath = input.readUTF();
         boolean encrypted = input.readBoolean();
 
         try {
             database.registerSharedFile(
                     new SharedFileDescriptor(fileId, filename, size, chunkSize, chunkCount, encrypted),
-                    originalPath,
                     sessionToken
             );
             output.writeBoolean(true);
@@ -203,7 +201,6 @@ public class TrackerServer {
             output.writeUTF(record.fileId());
             output.writeUTF(record.filename());
             output.writeLong(record.size());
-            output.writeUTF(record.originalPath() == null ? "" : record.originalPath());
             output.writeInt(record.chunkSize());
             output.writeInt(record.chunkCount());
             output.writeBoolean(record.encrypted());

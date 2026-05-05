@@ -596,7 +596,7 @@ public class MainApp extends Application {
 
         VBox trackerRecordsCard = card(
                 trackerRecordsHeader,
-                helperLabel("Tracker metadata records include file info, original path, and chunk record details."),
+                helperLabel("Tracker metadata records include file info, peer availability, and chunk record details."),
                 trackerRecordsListView
         );
         VBox.setVgrow(trackerRecordsListView, Priority.ALWAYS);
@@ -1012,10 +1012,6 @@ public class MainApp extends Application {
             Label details = new Label(humanReadableSize(item.size()) + " • " + item.chunkCount() + " chunks • " +
                     item.peers().size() + " peer(s)" + (item.encrypted() ? " • encrypted" : ""));
             details.setStyle("-fx-font-size: 12px; -fx-text-fill: #617486;");
-            String pathValue = item.originalPath() == null || item.originalPath().isBlank() ? "(path unavailable)" : item.originalPath();
-            Label path = new Label(pathValue);
-            path.setWrapText(true);
-            path.setStyle("-fx-font-size: 11px; -fx-text-fill: #35556c;");
             Label chunks = new Label(item.chunkRecords().isEmpty()
                     ? "No chunk records"
                     : "Chunk records: " + item.chunkRecords().get(0) +
@@ -1023,7 +1019,7 @@ public class MainApp extends Application {
             chunks.setWrapText(true);
             chunks.setStyle("-fx-font-size: 11px; -fx-text-fill: #35556c;");
 
-            VBox content = new VBox(4, filename, details, path, chunks);
+            VBox content = new VBox(4, filename, details, chunks);
             content.setPadding(new Insets(8, 4, 8, 4));
             setGraphic(content);
         }

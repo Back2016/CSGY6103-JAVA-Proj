@@ -171,7 +171,7 @@ public class PeerNode {
         }
 
         SharedFileDescriptor descriptor = buildDescriptor(filePath.getFileName().toString(), servedPath, encrypted);
-        SharedFileEntry entry = new SharedFileEntry(descriptor, servedPath, filePath.toAbsolutePath().toString());
+        SharedFileEntry entry = new SharedFileEntry(descriptor, servedPath);
         sharedFiles.put(descriptor.fileId(), entry);
         registerFileWithTracker(entry);
     }
@@ -332,7 +332,6 @@ public class PeerNode {
                 String fileId = input.readUTF();
                 String filename = input.readUTF();
                 long size = input.readLong();
-                String originalPath = input.readUTF();
                 int chunkSize = input.readInt();
                 int chunkCount = input.readInt();
                 boolean encrypted = input.readBoolean();
@@ -351,7 +350,7 @@ public class PeerNode {
                             input.readInt()
                     ));
                 }
-                records.add(new TrackerRecord(filename, fileId, size, originalPath, chunkSize, chunkCount, encrypted, updatedAt, peers, chunkRecords));
+                records.add(new TrackerRecord(filename, fileId, size, chunkSize, chunkCount, encrypted, updatedAt, peers, chunkRecords));
             }
             writeTrackerRecordsCsv(records);
             return records;
@@ -416,7 +415,6 @@ public class PeerNode {
             output.writeLong(entry.descriptor().size());
             output.writeInt(entry.descriptor().chunkSize());
             output.writeInt(entry.descriptor().chunkCount());
-            output.writeUTF(entry.originalPath());
             output.writeBoolean(entry.descriptor().encrypted());
             output.flush();
 
@@ -536,13 +534,12 @@ public class PeerNode {
     private void writeTrackerRecordsCsv(List<TrackerRecord> records) throws IOException {
         Path csvPath = sessionDirectory.resolve("tracker_records.csv");
         List<String> lines = new ArrayList<>();
-        lines.add("file_id,filename,size,original_path,chunk_size,chunk_count,encrypted,updated_at,peers,chunk_records");
+        lines.add("file_id,filename,size,chunk_size,chunk_count,encrypted,updated_at,peers,chunk_records");
         for (TrackerRecord record : records) {
             lines.add(String.join(",",
                     CsvUtils.quote(record.fileId()),
                     CsvUtils.quote(record.filename()),
                     CsvUtils.quote(String.valueOf(record.size())),
-                    CsvUtils.quote(record.originalPath()),
                     CsvUtils.quote(String.valueOf(record.chunkSize())),
                     CsvUtils.quote(String.valueOf(record.chunkCount())),
                     CsvUtils.quote(String.valueOf(record.encrypted())),
@@ -705,6 +702,6 @@ public class PeerNode {
         return cipher;
     }
 
-    private record SharedFileEntry(SharedFileDescriptor descriptor, Path servedPath, String originalPath) {
+    private record SharedFileEntry(SharedFileDescriptor descriptor, Path servedPath) {
     }
 }
