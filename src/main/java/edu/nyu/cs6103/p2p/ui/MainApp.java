@@ -552,12 +552,12 @@ public class MainApp extends Application {
         configPane.add(fieldStackWithButton("Tracker Records Folder", "Where per-session tracker records and CSV history are stored", trackerRecordsDirField, chooseTrackerRecordsDirButton), 0, 3, 2, 1);
         configPane.add(fieldStackWithButton("Downloads Folder", "Where downloads and peer history are stored", downloadsDirField, chooseDownloadsDirButton), 0, 4, 2, 1);
 
-        HBox trackerActions = new HBox(10, checkTrackerButton, startLocalTrackerButton, stopLocalTrackerButton);
+        HBox trackerDiscoveryActions = new HBox(10, checkTrackerButton, startLocalTrackerButton);
         HBox.setHgrow(checkTrackerButton, Priority.ALWAYS);
         HBox.setHgrow(startLocalTrackerButton, Priority.ALWAYS);
-        HBox.setHgrow(stopLocalTrackerButton, Priority.ALWAYS);
         checkTrackerButton.setMaxWidth(Double.MAX_VALUE);
         startLocalTrackerButton.setMaxWidth(Double.MAX_VALUE);
+
         stopLocalTrackerButton.setMaxWidth(Double.MAX_VALUE);
 
         HBox connectionActions = new HBox(10, connectTrackerButton, disconnectTrackerButton);
@@ -571,7 +571,12 @@ public class MainApp extends Application {
                 setupHint,
                 helperLabel("Check whether a tracker is already alive. If it is not, you can start one on this machine, then connect this peer to it. For LAN testing, set Peer Host / LAN IP to the address other computers use to reach this machine."),
                 configPane,
-                trackerActions,
+                sectionLabel("Local Tracker"),
+                helperLabel("Use these controls to inspect, start, or stop the tracker process running on this machine."),
+                trackerDiscoveryActions,
+                stopLocalTrackerButton,
+                sectionLabel("Peer Session"),
+                helperLabel("Connect this peer to a tracker session, or disconnect it and clear its shared registrations."),
                 connectionActions
         );
         styleCardTitle((Label) setupCard.getChildren().get(0));
