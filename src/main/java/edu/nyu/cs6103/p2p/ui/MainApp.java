@@ -85,9 +85,9 @@ public class MainApp extends Application {
         Button shareFileButton = primaryButton("Share a File");
         Button searchButton = primaryButton("Search");
         Button downloadButton = primaryButton("Download Selected");
-        Button refreshHistoryButton = secondaryButton("Refresh History");
+        Button refreshHistoryButton = secondaryButton("Refresh");
         Button refreshTrackerRecordsButton = secondaryButton("Refresh Records");
-        Button openDownloadPathButton = secondaryButton("Open Download Folder");
+        Button openDownloadPathButton = secondaryButton("Open Folder");
 
         shareFileButton.setDisable(true);
         searchButton.setDisable(true);
@@ -607,8 +607,12 @@ public class MainApp extends Application {
                 statusLabel
         );
 
-        HBox historyHeader = new HBox(10, titledLabel("Download History"), spacer(), openDownloadPathButton, refreshHistoryButton);
-        historyHeader.setAlignment(Pos.CENTER_LEFT);
+        VBox historyHeader = new VBox(4,
+                titledLabel("Download History"),
+                helperLabel("Recent completed or failed downloads for this peer."));
+
+        HBox historyActions = new HBox(10, spacer(), openDownloadPathButton, refreshHistoryButton);
+        historyActions.setAlignment(Pos.CENTER_LEFT);
 
         HBox trackerRecordsHeader = new HBox(10, titledLabel("Tracker Records"), spacer(), refreshTrackerRecordsButton);
         trackerRecordsHeader.setAlignment(Pos.CENTER_LEFT);
@@ -622,7 +626,7 @@ public class MainApp extends Application {
 
         VBox historyCard = card(
                 historyHeader,
-                helperLabel("Recent completed or failed downloads for this peer."),
+                historyActions,
                 historyListView
         );
         VBox.setVgrow(historyListView, Priority.ALWAYS);
