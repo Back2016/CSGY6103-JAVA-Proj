@@ -1,96 +1,105 @@
-# CSGY6103 Java Final Project
+# P2P File Sharing System
 
-## Team Project Overview
+This project is a Java peer-to-peer file sharing system with a central tracker, a JavaFX desktop client, parallel chunk downloads, optional per-file encryption, and session-based tracker records.
 
-We built a peer-to-peer file sharing system in Java for the CS6103 final project. The goal of the project was to go beyond a simple CRUD application and combine multiple advanced Java topics into one working system. Our app lets peers connect to a tracker, register files, search for files shared by other peers, and download those files in parallel chunk-by-chunk.
+The codebase is organized around a simple workflow:
 
-This repository contains the tracker server, the peer networking logic, the JavaFX desktop client, automated tests, and packaging scripts for local demos.
+1. A peer connects to a tracker and opens a session.
+2. The peer shares a local file with the tracker.
+3. Other peers search the tracker and download the file directly from peers.
+4. Downloads are verified by file hash before being accepted.
+5. Disconnecting a peer clears its shared registrations from the tracker.
 
-## Why This Project Fits The Course Requirements
+## What The App Does
 
-This project was designed to satisfy the final project requirement of using at least 3 advanced concepts. Our implementation includes all of the following:
+- Check tracker health, connect to a tracker, disconnect, and run a local tracker from the GUI.
+- Share files by content hash instead of by filename alone.
+- Keep same-name files with different content separate.
+- Support optional per-file password encryption when sharing.
+- Search files through the tracker and download them from other peers.
+- Download files in parallel chunk-by-chunk.
+- Retry other peers automatically when one peer is unavailable.
+- Verify downloaded content by SHA-256 hash before marking the download complete.
+- Export tracker records and local download history to CSV files.
+- Open the containing folder for a selected download entry from the GUI.
 
-- JavaFX GUI for the desktop client interface
-- networking with `Socket` and `ServerSocket`
-- multithreading with `ExecutorService` for concurrent chunk serving and downloading
-- persistent tracker metadata with SQLite
-- per-session CSV history and tracker record exports
-- chunk-based file transfer logic
-- tracker/peer coordination across multiple machines on a LAN or VPN
-- optional per-file password encryption for secure sharing
+## Key Behavior
 
-From a course perspective, the biggest advanced concepts in this project are:
+- `fileId` is the SHA-256 hash of the actual shared payload.
+- Encrypted shares are hashed after encryption, so the same plaintext with different passwords becomes a different share.
+- Tracker records are session-scoped and show metadata only.
+- Tracker records do not expose another user’s original absolute local path.
+- `tracker_records.csv` contains file metadata, peer list, and chunk layout summary for the current session.
+- `download_history.csv` is local to the downloading peer and stores the destination path on that machine.
+- Peer sessions are kept alive with heartbeats and expire automatically if they stop updating.
+- `Disconnect Tracker` unregisters the current peer’s shared files from the tracker and clears local shared-file state.
+- `Stop Tracker Here` stops the local tracker and disconnects the current peer first to reduce stale registrations.
 
-- GUI development
-- multithreading and concurrency
-- network communication between distributed peers
-- persistent data management
+## How It Works
 
-## Core Features
+### Sharing
 
-- tracker health check, connect, disconnect, start local tracker, and stop local tracker
-- peer registration and file search through a central tracker
-- direct peer-to-peer chunk transfer
-- concurrent multi-chunk downloads
-- retry logic when one peer is unavailable
-- LAN and VPN-friendly peer addressing using explicit `Peer Host / LAN IP`
-- per-file optional password encryption
-- per-tracker-session `tracker_records.csv` and `download_history.csv`
-- activity log and download history inside the GUI
-- open downloaded file folder directly from the app
+- The peer computes a SHA-256 hash for the file that is actually being shared.
+- For encrypted sharing, the peer creates a temporary encrypted copy first.
+- Only after tracker registration succeeds does the peer keep the file in its shared-file map.
+- If registration fails, the temporary encrypted copy is deleted.
 
-## Tech Stack
+### Searching
 
-- Java 17+
-- Maven 3.9+
-- JavaFX
-- SQLite JDBC
-- Java sockets
-- Java concurrency utilities
-- CSV session exports
+- The tracker stores shared files by `fileId`, filename, size, chunk size, chunk count, encrypted flag, and session token.
+- Search results are grouped by `fileId`.
+- This prevents same-name files with different content from being merged into one result.
+
+### Downloading
+
+- Downloads are split into chunks and fetched in parallel.
+- Each chunk request is validated for chunk index and returned length.
+- The downloaded file is re-hashed before the app marks the transfer successful.
+- If the file is encrypted, the decrypted output is written only after the encrypted payload is verified.
+- Failed downloads clean up partial files and working temporary files.
 
 ## Repository Layout
 
 - `src/main/java/edu/nyu/cs6103/p2p/ui`
-  JavaFX desktop application
+  JavaFX desktop application.
 - `src/main/java/edu/nyu/cs6103/p2p/tracker`
-  tracker server and tracker main entry point
+  tracker server, tracker client, and tracker entry point.
 - `src/main/java/edu/nyu/cs6103/p2p/peer`
-  peer networking, registration, sharing, and download logic
+  peer networking, sharing, downloading, and local cleanup logic.
 - `src/main/java/edu/nyu/cs6103/p2p/db`
-  tracker persistence and session history helpers
+  tracker persistence and local CSV history helpers.
 - `src/main/java/edu/nyu/cs6103/p2p/model`
-  data models for search results, tracker records, peers, and history
+  data models for peers, shared files, search results, tracker records, and history entries.
 - `src/test/java/edu/nyu/cs6103/p2p`
-  integration tests
+  integration tests.
 - `scripts`
-  packaging helpers
+  packaging helpers.
 - `packaging`
-  portable launcher assets
+  portable launcher assets.
 
-## Setup
+## Requirements
 
-Install and verify:
+- Java 17 or newer
+- Maven 3.9 or newer
+- JavaFX
+- SQLite JDBC
+
+## Build And Test
+
+Check your local tools:
 
 ```bash
 java -version
 mvn -version
 ```
 
-Recommended versions:
-
-- Java 17 or newer
-- Maven 3.9 or newer
-
-Clone and build:
+Build the project:
 
 ```bash
-git clone https://github.com/Back2016/CSGY6103-JAVA-Proj.git
-cd CSGY6103-JAVA-Proj
 mvn clean compile
 ```
 
-Run tests:
+Run the test suite:
 
 ```bash
 mvn test
@@ -98,7 +107,7 @@ mvn test
 
 ## How To Run
 
-### Option 1: Start the tracker from terminal
+### Start the tracker from the terminal
 
 ```bash
 mvn exec:java -Dexec.mainClass=edu.nyu.cs6103.p2p.tracker.TrackerServerMain
@@ -108,15 +117,15 @@ Default tracker port:
 
 - `5050`
 
-Custom tracker port:
+You can pass a custom port:
 
 ```bash
 mvn exec:java -Dexec.mainClass=edu.nyu.cs6103.p2p.tracker.TrackerServerMain -Dexec.args="5051"
 ```
 
-### Option 2: Start the tracker from the GUI
+The terminal tracker stores its SQLite file as `tracker.db` in the current working directory.
 
-Launch the app:
+### Start the GUI client
 
 ```bash
 mvn javafx:run
@@ -124,155 +133,74 @@ mvn javafx:run
 
 In the GUI:
 
-1. Enter `Tracker Host`
-2. Enter `Tracker Port`
-3. Enter `Peer Host / LAN IP`
-4. Enter `Peer Port`
-5. Click `Check Tracker`
-6. If no tracker is running, click `Start Tracker Here`
-7. Click `Connect to Tracker`
+1. Enter `Tracker Host`.
+2. Enter `Tracker Port`.
+3. Enter `Peer Host / LAN IP`.
+4. Enter `Peer Port`.
+5. Click `Check Tracker`.
+6. If needed, click `Start Tracker Here`.
+7. Click `Connect to Tracker`.
 
-To open a second peer window, run:
+To run a second peer, launch another GUI window and use a different peer port.
 
-```bash
-mvn javafx:run
-```
+Example peer ports on one machine:
 
-Use different peer ports on the same machine:
+- `6060`
+- `6061`
+- `6062`
 
-- Peer A: `6060`
-- Peer B: `6061`
-- Peer C: `6062`
+## Typical Demo Flow
 
-## Basic Demo Flow
-
-1. Start the tracker, either from terminal or from one app window.
-2. Launch Peer A and connect to the tracker.
-3. Launch Peer B and connect to the same tracker.
+1. Start a tracker.
+2. Launch Peer A and connect it to the tracker.
+3. Launch Peer B and connect it to the same tracker.
 4. On Peer A, click `Share a File`.
-5. When prompted, leave the password blank for a normal file, or enter a password to encrypt that file.
+5. Leave the password blank to share normally, or enter a password to share the file in encrypted form.
 6. On Peer B, search for the filename.
-7. Select the file and download it.
+7. Select the result and download it.
 8. If the file is encrypted, enter the correct password when prompted.
-9. Confirm that the download appears in `Download History`.
+9. Check the `Download History` view and use `Open Download Folder` if you want to inspect the saved file.
 
-## Important Configuration Notes
+## Local Storage
 
-- `Tracker Host` and `Tracker Port` tell the peer which tracker server to connect to.
-- `Peer Host / LAN IP` is the address other peers use to reach this machine.
-- `Peer Port` is the upload/listening port for this peer.
-- `Peer ID` is mainly used as metadata and log identity.
-- If multiple peers are running on one machine, each must use a different `Peer Port`.
+By default, the GUI stores local data under `~/P2PFileSharing`.
 
-## LAN Usage
+- `~/P2PFileSharing/downloads`
+  Download destination folder.
+- `~/P2PFileSharing/tracker/tracker.db`
+  SQLite database for the local tracker started from the GUI.
+- `~/P2PFileSharing/trackerRecords`
+  Per-peer, per-session tracker record exports and CSV history.
 
-For a normal LAN test:
+Each peer session gets its own folder under `trackerRecords`.
 
-- one computer runs the tracker
-- all peers point to that machine using `Tracker Host`
-- each peer fills `Peer Host / LAN IP` with its own reachable LAN address
-
-Example:
-
-- Computer A runs the tracker and also shares files
-  - `Tracker Host`: `localhost` or `192.168.1.20`
-  - `Tracker Port`: `5050`
-  - `Peer Host / LAN IP`: `192.168.1.20`
-  - `Peer Port`: `6060`
-- Computer B downloads from A
-  - `Tracker Host`: `192.168.1.20`
-  - `Tracker Port`: `5050`
-  - `Peer Host / LAN IP`: `192.168.1.21`
-  - `Peer Port`: `6060`
-
-Find your LAN IP on macOS:
-
-```bash
-ipconfig getifaddr en0
-```
-
-If needed:
-
-```bash
-ipconfig getifaddr en1
-```
-
-## VPN Usage
-
-The project can also work over VPN if the VPN allows peer-to-peer traffic between clients.
-
-Rules:
-
-- `Tracker Host` should be the tracker machine's VPN IP
-- `Peer Host / LAN IP` should be this machine's own VPN IP
-- tracker port and peer port must be reachable through the VPN
-
-If the VPN blocks client-to-client traffic, tracker search may work while peer download still fails.
-
-## File Encryption
-
-Password protection is now per file.
-
-How it works:
-
-- when sharing a file, the app prompts for a password
-- if left blank, that file is shared normally
-- if a password is entered, only that file is shared in encrypted form
-- another file can use a different password or no password at all
-
-On download:
-
-- if the selected file is encrypted, the app prompts for the password
-- after downloading the encrypted chunks, the peer decrypts the file locally
-
-Note:
-
-- the tracker does not store the password
-- encrypted shared temp files are stored only inside the current tracker session folder
-
-## Tracker Sessions And Local Data
-
-The app now stores tracker-related artifacts by tracker session instead of using one shared runtime bucket.
-
-By default:
-
-- downloads go to `~/P2PFileSharing/downloads`
-- tracker database goes to `~/P2PFileSharing/tracker/tracker.db`
-- session artifacts go to `~/P2PFileSharing/trackerRecords`
-
-Each tracker startup creates a new session id. When a peer connects, it creates a folder inside `trackerRecords` for that session.
-
-Each session folder contains:
+The session folder can contain:
 
 - `tracker_records.csv`
 - `download_history.csv`
-- encrypted temporary shared copies when encryption is used
-
-This means:
-
-- tracker records are per tracker session
-- download history is also per tracker session
-- restarting the tracker starts a fresh session with fresh CSV files
+- encrypted temporary shared copies used during password-protected sharing
 
 ## Tracker Records
 
-The GUI includes a `Tracker Records` section that shows:
+The `Tracker Records` panel shows tracker metadata for the current session.
+
+Each record includes:
 
 - filename
-- size
-- original source path
+- fileId
+- file size
 - chunk size and chunk count
-- whether the file is encrypted
-- which peers are currently advertising the file
-- chunk record summary
+- encrypted flag
+- peer list
+- chunk layout summary
 
-The same data is exported to `tracker_records.csv` for the current session.
+The `chunkRecords` field is a layout summary generated from file size and chunk settings. It is not a file access log.
+
+The tracker record export does not include original local file paths.
 
 ## Download History
 
-The GUI includes a per-session `Download History` view.
-
-For each entry, the app records:
+The `Download History` panel is local to the peer and records:
 
 - timestamp
 - filename
@@ -280,27 +208,43 @@ For each entry, the app records:
 - destination path
 - status
 
-The `Open Download Folder` action opens the containing folder for the selected download entry.
+The `Open Download Folder` action opens the folder containing the selected download.
 
-## Tracker Lifecycle Behavior
+## File Encryption
 
-- `Start Tracker Here` starts a tracker in the current app
-- `Stop Tracker Here` stops the local tracker
-- every tracker restart clears old shared-file registrations
-- `Disconnect Tracker` unregisters the current peer from the tracker and clears its local shared list
+Password protection is per file.
 
-This helps avoid stale file advertisements between test sessions.
+- If you leave the password blank, the file is shared normally.
+- If you enter a password, the app shares an encrypted copy of that file.
+- When someone downloads an encrypted file, the app prompts for the password.
+- The tracker never stores the password.
+
+Important detail:
+
+- the same plaintext shared with different passwords produces different `fileId` values, so the tracker keeps them separate
+
+## Tracker Lifecycle
+
+- `Start Tracker Here` starts a tracker inside the GUI app.
+- `Stop Tracker Here` stops the local tracker.
+- `Disconnect Tracker` unregisters the current peer from the tracker and clears local shared files.
+- Peer sessions expire automatically if heartbeats stop arriving.
 
 ## Testing
 
-The automated test suite covers:
+The integration tests cover:
 
-- tracker registration, search, and end-to-end download
-- retrying another peer when one peer endpoint is unavailable
-- chunk distribution across multiple peers
-- tracker startup clearing old share records
+- registration, search, and end-to-end download
+- same filename with different content
+- same plaintext with different encryption
+- session validation for disconnect and register
+- session expiry cleanup
+- zero-byte file sharing and download
+- hash mismatch failures
+- wrong-password cleanup for encrypted downloads
+- rollback of temporary encrypted files on share failure
 
-Run:
+Run the tests with:
 
 ```bash
 mvn test
@@ -326,43 +270,22 @@ Bundle contents:
 
 ## Troubleshooting
 
-- If a download fails with `Connection refused`, check that the uploader's `Peer Host / LAN IP` and `Peer Port` are correct.
-- If a download hangs on `Preparing chunks`, the downloader can see the tracker but cannot reach the uploader peer.
-- If two peers run on the same machine, make sure they use different peer ports.
-- If you are using WSL2, be careful: a Java process inside WSL2 may not be reachable from another computer even if tracker registration succeeds.
-- If a file is encrypted and download fails after transfer, verify that the password entered for that specific file is correct.
-- If macOS blocks a `.command` launcher, right-click and choose `Open`.
+- If a download fails with `Connection refused`, check the uploader peer host and peer port.
+- If a download hangs while preparing chunks, the tracker is reachable but the downloader cannot reach the uploader peer.
+- If two peers run on the same machine, make sure each peer uses a different peer port.
+- If a file is encrypted and download fails after transfer, verify the password for that specific file.
+- If macOS blocks a `.command` launcher, right-click it and choose `Open`.
+- If you stop the local tracker from the GUI, the app tries to disconnect the current peer first to avoid stale registrations.
 
 ## Development Notes
 
-We approached this project like a student team building a small distributed system in stages.
+The implementation combines several advanced Java areas in one project:
 
-Our implementation path was roughly:
+- JavaFX event-driven UI
+- sockets for tracker-peer and peer-peer communication
+- concurrency for parallel chunk downloading and chunk serving
+- SQLite persistence for tracker metadata
+- CSV exports for per-session records
+- optional cryptography for per-file password protection
 
-- first build tracker registration and search
-- then add direct peer-to-peer chunk downloads
-- then add multithreaded downloading and retry behavior
-- then add local persistence and session exports
-- then improve the GUI for actual demos on multiple machines
-- then add encryption, diagnostics, and tracker lifecycle controls
-
-During development we spent most of our time on:
-
-- peer addressing across LAN, VPN, Windows, macOS, and WSL2
-- making tracker state reset cleanly between demo sessions
-- avoiding stale peer records
-- making failure messages understandable enough for classroom demos
-
-## Development And Tech Stack Summary
-
-To align with the project description, our team intentionally combined multiple advanced Java areas into one deliverable:
-
-- GUI and event-driven programming with JavaFX
-- concurrent programming with background tasks and thread pools
-- network programming with sockets for tracker-peer and peer-peer communication
-- persistence using SQLite for tracker metadata
-- structured CSV export for per-session recordkeeping
-- file chunking and reconstruction logic
-- optional cryptography for password-protected sharing
-
-We believe this project goes beyond a simple CRUD system because it requires coordination between UI, networking, concurrency, persistence, and distributed peer behavior. That combination is what made it a good fit for the final project requirements.
+The code is split so that tracker logic, peer logic, UI logic, and storage helpers stay separate and easier to maintain.
