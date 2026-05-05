@@ -285,7 +285,7 @@ public class MainApp extends Application {
             connectTask.setOnRunning(evt -> {
                 connectTrackerButton.setDisable(true);
                 checkTrackerButton.setDisable(true);
-                statusLabel.setText("Connecting to tracker and starting peer service...");
+                statusLabel.setText("Connecting to tracker, starting peer service, and opening peer session...");
             });
             connectTask.setOnSucceeded(evt -> {
                 peerNode = connectTask.getValue();

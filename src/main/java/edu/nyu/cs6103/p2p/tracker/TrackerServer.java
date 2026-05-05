@@ -1,5 +1,6 @@
 package edu.nyu.cs6103.p2p.tracker;
 
+import edu.nyu.cs6103.p2p.common.AppConfig;
 import edu.nyu.cs6103.p2p.common.ProtocolCommands;
 import edu.nyu.cs6103.p2p.db.TrackerDatabase;
 import edu.nyu.cs6103.p2p.model.ChunkRecord;
@@ -19,12 +20,19 @@ import java.net.SocketException;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class TrackerServer {
     private final int port;
     private final TrackerDatabase database;
     private final String sessionId;
     private final ExecutorService executorService = Executors.newCachedThreadPool();
+    private final ScheduledExecutorService cleanupExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "tracker-cleanup");
+        thread.setDaemon(true);
+        return thread;
+    });
     private volatile boolean running;
     private volatile ServerSocket serverSocket;
 
@@ -35,8 +43,15 @@ public class TrackerServer {
     }
 
     public void start() throws IOException {
-        database.clearSharedFiles();
+        database.clearPeerSessionsAndFiles();
         running = true;
+        cleanupExecutor.scheduleAtFixedRate(() -> {
+            try {
+                database.purgeExpiredSessions();
+            } catch (Exception exception) {
+                exception.printStackTrace();
+            }
+        }, AppConfig.HEARTBEAT_INTERVAL_MS, AppConfig.HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
         try (ServerSocket boundServerSocket = new ServerSocket(port)) {
             serverSocket = boundServerSocket;
             while (running) {
@@ -50,6 +65,7 @@ public class TrackerServer {
         } finally {
             running = false;
             serverSocket = null;
+            cleanupExecutor.shutdownNow();
         }
     }
 
@@ -62,6 +78,7 @@ public class TrackerServer {
         } catch (IOException ignored) {
         }
         executorService.shutdownNow();
+        cleanupExecutor.shutdownNow();
     }
 
     private void handleClient(Socket clientSocket) {
@@ -71,8 +88,10 @@ public class TrackerServer {
             String command = input.readUTF();
             switch (command) {
                 case ProtocolCommands.PING -> handlePing(output);
+                case ProtocolCommands.HELLO -> handleHello(input, output);
+                case ProtocolCommands.HEARTBEAT -> handleHeartbeat(input, output);
                 case ProtocolCommands.REGISTER -> handleRegister(input, output);
-                case ProtocolCommands.UNREGISTER_PEER -> handleUnregisterPeer(input, output);
+                case ProtocolCommands.DISCONNECT -> handleDisconnect(input, output);
                 case ProtocolCommands.SEARCH -> handleSearch(input, output);
                 case ProtocolCommands.LIST_RECORDS -> handleListRecords(output);
                 default -> {
@@ -93,10 +112,31 @@ public class TrackerServer {
         output.flush();
     }
 
-    private void handleRegister(DataInputStream input, DataOutputStream output) throws IOException {
+    private void handleHello(DataInputStream input, DataOutputStream output) throws IOException {
         String peerId = input.readUTF();
         String host = input.readUTF();
         int peerPort = input.readInt();
+        String peerSessionToken = database.openPeerSession(peerId, host, peerPort);
+        output.writeBoolean(true);
+        output.writeUTF(peerSessionToken);
+        output.flush();
+    }
+
+    private void handleHeartbeat(DataInputStream input, DataOutputStream output) throws IOException {
+        String sessionToken = input.readUTF();
+        try {
+            database.heartbeat(sessionToken);
+            output.writeBoolean(true);
+            output.writeUTF("Heartbeat accepted");
+        } catch (IllegalStateException exception) {
+            output.writeBoolean(false);
+            output.writeUTF(exception.getMessage());
+        }
+        output.flush();
+    }
+
+    private void handleRegister(DataInputStream input, DataOutputStream output) throws IOException {
+        String sessionToken = input.readUTF();
         String fileId = input.readUTF();
         String filename = input.readUTF();
         long size = input.readLong();
@@ -105,24 +145,31 @@ public class TrackerServer {
         String originalPath = input.readUTF();
         boolean encrypted = input.readBoolean();
 
-        database.registerSharedFile(
-                new SharedFileDescriptor(fileId, filename, size, chunkSize, chunkCount, encrypted),
-                originalPath,
-                peerId,
-                host,
-                peerPort
-        );
-
-        output.writeBoolean(true);
-        output.writeUTF("Registered " + filename);
+        try {
+            database.registerSharedFile(
+                    new SharedFileDescriptor(fileId, filename, size, chunkSize, chunkCount, encrypted),
+                    originalPath,
+                    sessionToken
+            );
+            output.writeBoolean(true);
+            output.writeUTF("Registered " + filename);
+        } catch (IllegalStateException exception) {
+            output.writeBoolean(false);
+            output.writeUTF(exception.getMessage());
+        }
         output.flush();
     }
 
-    private void handleUnregisterPeer(DataInputStream input, DataOutputStream output) throws IOException {
-        String peerId = input.readUTF();
-        database.unregisterPeer(peerId);
-        output.writeBoolean(true);
-        output.writeUTF("Unregistered " + peerId);
+    private void handleDisconnect(DataInputStream input, DataOutputStream output) throws IOException {
+        String sessionToken = input.readUTF();
+        try {
+            database.closePeerSession(sessionToken);
+            output.writeBoolean(true);
+            output.writeUTF("Disconnected peer session");
+        } catch (IllegalStateException exception) {
+            output.writeBoolean(false);
+            output.writeUTF(exception.getMessage());
+        }
         output.flush();
     }
 

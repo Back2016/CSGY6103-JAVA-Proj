@@ -9,6 +9,7 @@ import edu.nyu.cs6103.p2p.model.SearchResult;
 import edu.nyu.cs6103.p2p.model.SharedFileDescriptor;
 import edu.nyu.cs6103.p2p.peer.PeerNode;
 import edu.nyu.cs6103.p2p.tracker.TrackerServer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -39,6 +40,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class P2PIntegrationTest {
     @TempDir
     Path tempDir;
+    private final List<TrackerServer> trackers = new ArrayList<>();
+
+    @AfterEach
+    void stopTrackers() {
+        for (TrackerServer tracker : trackers) {
+            tracker.stop();
+        }
+        trackers.clear();
+    }
 
     @Test
     void peerCanRegisterSearchAndDownloadAFile() throws Exception {
@@ -232,10 +242,11 @@ class P2PIntegrationTest {
     void trackerStartupClearsPreviouslyRegisteredFiles() throws Exception {
         Path trackerDbPath = tempDir.resolve("tracker-restart.db");
         TrackerDatabase staleDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
+        String staleSessionToken = staleDatabase.openPeerSession("old-peer", "localhost", 6060);
         staleDatabase.registerSharedFile(
                 new SharedFileDescriptor("stale-file-id", "stale.txt", 128, AppConfig.DEFAULT_CHUNK_SIZE, 1, false),
                 tempDir.resolve("stale.txt").toString(),
-                "old-peer", "localhost", 6060);
+                staleSessionToken);
         assertEquals(1, staleDatabase.searchFiles("stale").size());
 
         int trackerPort = findFreePort();
@@ -309,10 +320,92 @@ class P2PIntegrationTest {
         assertTrue(exception.getMessage().contains("fileId"));
     }
 
-    private static void startTrackerInBackground(int trackerPort, TrackerDatabase trackerDatabase) {
+    @Test
+    void registerWithoutValidSessionToken_shouldBeRejected() throws Exception {
+        int trackerPort = findFreePort();
+        Path trackerDbPath = tempDir.resolve("invalid-register.db");
+        TrackerDatabase trackerDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
+        startTrackerInBackground(trackerPort, trackerDatabase);
+        waitForTrackerStartup(trackerPort);
+
+        TrackerResponse response = sendRegisterRequest(
+                trackerPort,
+                "invalid-session-token",
+                new SharedFileDescriptor("invalid-file-id", "invalid.txt", 64, AppConfig.DEFAULT_CHUNK_SIZE, 1, false),
+                tempDir.resolve("invalid.txt").toString()
+        );
+
+        assertFalse(response.success());
+        assertTrue(response.message().contains("session"));
+    }
+
+    @Test
+    void disconnectWithoutValidSessionToken_shouldBeRejected() throws Exception {
+        int trackerPort = findFreePort();
+        Path trackerDbPath = tempDir.resolve("invalid-disconnect.db");
+        TrackerDatabase trackerDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
+        startTrackerInBackground(trackerPort, trackerDatabase);
+        waitForTrackerStartup(trackerPort);
+
+        TrackerResponse response = sendDisconnectRequest(trackerPort, "invalid-session-token");
+
+        assertFalse(response.success());
+        assertTrue(response.message().contains("session"));
+    }
+
+    @Test
+    void expiredPeerSession_shouldDisappearFromSearchResults() throws Exception {
+        int trackerPort = findFreePort();
+        Path trackerDbPath = tempDir.resolve("expired-session.db");
+        TrackerDatabase trackerDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
+        startTrackerInBackground(trackerPort, trackerDatabase);
+        waitForTrackerStartup(trackerPort);
+
+        String sessionToken = openPeerSession(trackerPort, "peer-expired", "127.0.0.1", 6060);
+        byte[] content = buildBytes(AppConfig.DEFAULT_CHUNK_SIZE + 512);
+        SharedFileDescriptor descriptor = new SharedFileDescriptor(
+                HashingUtils.sha256Hex(content),
+                "expiring.txt",
+                content.length,
+                AppConfig.DEFAULT_CHUNK_SIZE,
+                (int) Math.ceil((double) content.length / AppConfig.DEFAULT_CHUNK_SIZE),
+                false
+        );
+        TrackerResponse registerResponse = sendRegisterRequest(trackerPort, sessionToken, descriptor, tempDir.resolve("expiring.txt").toString());
+        assertTrue(registerResponse.success());
+
+        PeerNode searcher = new PeerNode(
+                "searcher",
+                "localhost",
+                trackerPort,
+                "test-expired-search",
+                findFreePort(),
+                "127.0.0.1",
+                tempDir.resolve("expired-search-records"),
+                tempDir.resolve("expired-search-downloads")
+        );
+
+        List<SearchResult> initialResults = waitForSearchResults(searcher, "expiring.txt", 1);
+        assertEquals(1, initialResults.size());
+
+        Thread.sleep(AppConfig.PEER_SESSION_TTL_MS + 750L);
+
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (System.nanoTime() < deadline) {
+            if (searcher.search("expiring.txt").isEmpty()) {
+                return;
+            }
+            Thread.sleep(100);
+        }
+        assertTrue(searcher.search("expiring.txt").isEmpty());
+    }
+
+    private void startTrackerInBackground(int trackerPort, TrackerDatabase trackerDatabase) {
+        TrackerServer trackerServer = new TrackerServer(trackerPort, trackerDatabase);
+        trackers.add(trackerServer);
         Thread thread = new Thread(() -> {
             try {
-                new TrackerServer(trackerPort, trackerDatabase).start();
+                trackerServer.start();
             } catch (IOException exception) {
                 throw new IllegalStateException(exception);
             }
@@ -368,6 +461,57 @@ class P2PIntegrationTest {
             }
         }
         throw new IOException("Tracker did not start listening on port " + port);
+    }
+
+    private static String openPeerSession(int trackerPort, String peerId, String host, int port) throws IOException {
+        try (Socket socket = new Socket("localhost", trackerPort);
+             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
+            output.writeUTF(ProtocolCommands.HELLO);
+            output.writeUTF(peerId);
+            output.writeUTF(host);
+            output.writeInt(port);
+            output.flush();
+
+            if (!input.readBoolean()) {
+                throw new IOException(input.readUTF());
+            }
+            return input.readUTF();
+        }
+    }
+
+    private static TrackerResponse sendRegisterRequest(int trackerPort,
+                                                       String sessionToken,
+                                                       SharedFileDescriptor descriptor,
+                                                       String originalPath) throws IOException {
+        try (Socket socket = new Socket("localhost", trackerPort);
+             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
+            output.writeUTF(ProtocolCommands.REGISTER);
+            output.writeUTF(sessionToken);
+            output.writeUTF(descriptor.fileId());
+            output.writeUTF(descriptor.filename());
+            output.writeLong(descriptor.size());
+            output.writeInt(descriptor.chunkSize());
+            output.writeInt(descriptor.chunkCount());
+            output.writeUTF(originalPath);
+            output.writeBoolean(descriptor.encrypted());
+            output.flush();
+
+            return new TrackerResponse(input.readBoolean(), input.readUTF());
+        }
+    }
+
+    private static TrackerResponse sendDisconnectRequest(int trackerPort, String sessionToken) throws IOException {
+        try (Socket socket = new Socket("localhost", trackerPort);
+             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
+            output.writeUTF(ProtocolCommands.DISCONNECT);
+            output.writeUTF(sessionToken);
+            output.flush();
+
+            return new TrackerResponse(input.readBoolean(), input.readUTF());
+        }
     }
 
     private static byte[] buildBytes(int length) {
@@ -463,5 +607,8 @@ class P2PIntegrationTest {
         private List<Integer> servedChunks() {
             return new ArrayList<>(servedChunks.keySet());
         }
+    }
+
+    private record TrackerResponse(boolean success, String message) {
     }
 }

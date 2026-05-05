@@ -46,6 +46,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
@@ -80,6 +82,8 @@ public class PeerNode {
     private final ClientDatabase clientDatabase;
     private final Map<String, SharedFileEntry> sharedFiles = new ConcurrentHashMap<>();
     private final PeerServer peerServer;
+    private volatile String peerSessionToken;
+    private volatile ScheduledExecutorService heartbeatExecutor;
 
     public PeerNode(String peerId,
                     String trackerHost,
@@ -129,11 +133,20 @@ public class PeerNode {
         this.peerServer = new PeerServer(peerPort, this);
     }
 
-    public void startServer() {
+    public synchronized void startServer() throws IOException {
         peerServer.start();
+        try {
+            peerSessionToken = openPeerSession();
+            startHeartbeatLoop();
+        } catch (IOException exception) {
+            stopServer();
+            throw exception;
+        }
     }
 
-    public void stopServer() {
+    public synchronized void stopServer() {
+        stopHeartbeatLoop();
+        peerSessionToken = null;
         peerServer.stop();
     }
 
@@ -354,11 +367,16 @@ public class PeerNode {
     }
 
     public void unregisterFromTracker() throws IOException {
+        String sessionToken = peerSessionToken;
+        if (sessionToken == null) {
+            clearSharedFiles();
+            return;
+        }
         try (Socket socket = new Socket(trackerHost, trackerPort);
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF(ProtocolCommands.UNREGISTER_PEER);
-            output.writeUTF(peerId);
+            output.writeUTF(ProtocolCommands.DISCONNECT);
+            output.writeUTF(sessionToken);
             output.flush();
 
             boolean success = input.readBoolean();
@@ -367,6 +385,7 @@ public class PeerNode {
             }
             input.readUTF();
         }
+        peerSessionToken = null;
         clearSharedFiles();
     }
 
@@ -383,13 +402,15 @@ public class PeerNode {
     }
 
     private void registerFileWithTracker(SharedFileEntry entry) throws IOException {
+        String sessionToken = peerSessionToken;
+        if (sessionToken == null) {
+            throw new IOException("Peer session is not established");
+        }
         try (Socket socket = new Socket(trackerHost, trackerPort);
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
             output.writeUTF(ProtocolCommands.REGISTER);
-            output.writeUTF(peerId);
-            output.writeUTF(advertisedHost);
-            output.writeInt(peerPort);
+            output.writeUTF(sessionToken);
             output.writeUTF(entry.descriptor().fileId());
             output.writeUTF(entry.descriptor().filename());
             output.writeLong(entry.descriptor().size());
@@ -569,6 +590,67 @@ public class PeerNode {
         if (!result.fileId().equals(actualFileId)) {
             Files.deleteIfExists(downloadedFile);
             throw new IOException("Download failed: file content did not match expected fileId for " + result.filename());
+        }
+    }
+
+    private String openPeerSession() throws IOException {
+        try (Socket socket = new Socket(trackerHost, trackerPort);
+             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
+            output.writeUTF(ProtocolCommands.HELLO);
+            output.writeUTF(peerId);
+            output.writeUTF(advertisedHost);
+            output.writeInt(peerPort);
+            output.flush();
+
+            boolean success = input.readBoolean();
+            if (!success) {
+                throw new IOException(input.readUTF());
+            }
+            return input.readUTF();
+        }
+    }
+
+    private void startHeartbeatLoop() {
+        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "peer-heartbeat-" + peerPort);
+            thread.setDaemon(true);
+            return thread;
+        });
+        executor.scheduleAtFixedRate(() -> {
+            try {
+                sendHeartbeat();
+            } catch (IOException ignored) {
+            }
+        }, AppConfig.HEARTBEAT_INTERVAL_MS, AppConfig.HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        heartbeatExecutor = executor;
+    }
+
+    private void stopHeartbeatLoop() {
+        ScheduledExecutorService executor = heartbeatExecutor;
+        if (executor != null) {
+            executor.shutdownNow();
+            heartbeatExecutor = null;
+        }
+    }
+
+    private void sendHeartbeat() throws IOException {
+        String sessionToken = peerSessionToken;
+        if (sessionToken == null) {
+            return;
+        }
+        try (Socket socket = new Socket(trackerHost, trackerPort);
+             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
+            output.writeUTF(ProtocolCommands.HEARTBEAT);
+            output.writeUTF(sessionToken);
+            output.flush();
+
+            boolean success = input.readBoolean();
+            if (!success) {
+                throw new IOException(input.readUTF());
+            }
+            input.readUTF();
         }
     }
 
