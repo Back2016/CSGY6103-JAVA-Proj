@@ -58,6 +58,139 @@ The codebase is organized around a simple workflow:
 - If the file is encrypted, the decrypted output is written only after the encrypted payload is verified.
 - Failed downloads clean up partial files and working temporary files.
 
+## UI Guide
+
+The desktop app is organized into separate cards so each part of the workflow is visible and easy to follow.
+
+### 1. Tracker Connection
+
+This is the first card in the left column.
+
+It contains the connection fields and tracker controls:
+
+- `Tracker Host`
+- `Tracker Port`
+- `Peer ID`
+- `Peer Port`
+- `Peer Host / LAN IP`
+- `Tracker Records Folder`
+- `Downloads Folder`
+- `Check Tracker`
+- `Start Tracker Here`
+- `Stop Tracker Here`
+- `Connect to Tracker`
+- `Disconnect Tracker`
+
+How to use it:
+
+1. Fill in the tracker host and port.
+2. Choose a peer port that is not already in use.
+3. Set `Peer Host / LAN IP` to the address other peers can reach on the network.
+4. Click `Check Tracker` if you want to verify the tracker first.
+5. If this machine should also run the tracker, click `Start Tracker Here`.
+6. Click `Connect to Tracker` to open the peer session.
+7. Click `Disconnect Tracker` to leave the tracker session and clear this peer's shared registrations.
+8. Click `Stop Tracker Here` only if you want to stop the local tracker process itself.
+
+### 2. Share Files
+
+This card is used after the peer is connected to a tracker.
+
+It contains:
+
+- `Share a File`
+- the current shared file list
+
+How to use it:
+
+1. Click `Share a File`.
+2. Select a local file.
+3. Leave the password blank to share normally, or enter a password to share an encrypted copy.
+4. After sharing succeeds, the file appears in the shared file list and is registered with the tracker.
+
+### 3. Search And Download
+
+This card is used to find files shared by other peers and download them.
+
+It contains:
+
+- search input
+- `Search`
+- `Download Selected`
+- search results list
+
+How to use it:
+
+1. Type part of a filename or a full filename.
+2. Click `Search`.
+3. Select a search result.
+4. Click `Download Selected`, or double-click a result.
+5. If the file is encrypted, enter the password when prompted.
+
+### 4. Transfer Status
+
+This card shows the current download or transfer state.
+
+It contains:
+
+- progress bar
+- status label
+
+Use it as a live indicator while a download or share operation is running.
+
+### 5. Tracker Records
+
+This card shows the tracker-side view of shared metadata for the current session.
+
+It contains:
+
+- `Refresh Records`
+- tracker record list
+
+What it is for:
+
+- show what the tracker currently sees as available
+- display file metadata such as filename, `fileId`, chunk count, and encryption flag
+- show which peers are advertising the file
+- summarize chunk layout information for the file
+
+What it is not:
+
+- it is not a download history
+- it is not a file access log
+- it does not expose the original absolute local path of another user
+
+### 6. Download History
+
+This card shows the local peer's download history.
+
+It contains:
+
+- `Open Folder`
+- `Refresh`
+- download history list
+
+What it is for:
+
+- show what this peer has downloaded locally
+- record the source peers, destination path, and status
+- open the folder containing the selected download
+
+This history is local to the current peer. It is not shared to the tracker.
+
+### 7. Activity Log
+
+This card is for diagnostic output.
+
+It shows:
+
+- tracker health checks
+- connect and disconnect messages
+- share and download failures
+- cleanup and retry behavior
+
+This is the best place to look when a workflow does not behave as expected.
+
 ## Repository Layout
 
 - `src/main/java/edu/nyu/cs6103/p2p/ui`
