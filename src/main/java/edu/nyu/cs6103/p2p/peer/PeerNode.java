@@ -160,20 +160,26 @@ public class PeerNode {
         }
 
         String normalizedPassword = password == null ? "" : password.trim();
-        Path servedPath;
-        boolean encrypted;
-        if (normalizedPassword.isEmpty()) {
-            servedPath = filePath;
-            encrypted = false;
-        } else {
-            servedPath = buildEncryptedCopy(filePath, normalizedPassword);
-            encrypted = true;
-        }
+        Path servedPath = filePath;
+        boolean encrypted = false;
+        Path temporaryEncryptedCopy = null;
+        try {
+            if (!normalizedPassword.isEmpty()) {
+                servedPath = buildEncryptedCopy(filePath, normalizedPassword);
+                temporaryEncryptedCopy = servedPath;
+                encrypted = true;
+            }
 
-        SharedFileDescriptor descriptor = buildDescriptor(filePath.getFileName().toString(), servedPath, encrypted);
-        SharedFileEntry entry = new SharedFileEntry(descriptor, servedPath);
-        sharedFiles.put(descriptor.fileId(), entry);
-        registerFileWithTracker(entry);
+            SharedFileDescriptor descriptor = buildDescriptor(filePath.getFileName().toString(), servedPath, encrypted);
+            SharedFileEntry entry = new SharedFileEntry(descriptor, servedPath);
+            registerFileWithTracker(entry);
+            sharedFiles.put(descriptor.fileId(), entry);
+        } catch (IOException exception) {
+            if (temporaryEncryptedCopy != null) {
+                Files.deleteIfExists(temporaryEncryptedCopy);
+            }
+            throw exception;
+        }
     }
 
     public List<String> getSharedFileNames() {
@@ -189,7 +195,7 @@ public class PeerNode {
     }
 
     public List<SearchResult> search(String query) throws IOException {
-        try (Socket socket = new Socket(trackerHost, trackerPort);
+        try (Socket socket = openTrackerSocket();
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
             output.writeUTF(ProtocolCommands.SEARCH);
@@ -239,47 +245,49 @@ public class PeerNode {
         Files.createDirectories(downloadsDirectory);
         String peerSummary = candidatePeers.stream().map(PeerInfo::toString).reduce((a, b) -> a + ", " + b).orElse("none");
 
-        statusCallback.accept("Preparing " + result.chunkCount() + " chunk(s)");
-        try (FileChannel channel = FileChannel.open(workingTarget,
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE)) {
-            channel.truncate(result.size());
-            AtomicInteger completedChunks = new AtomicInteger();
-            ExecutorService executor = Executors.newFixedThreadPool(Math.min(AppConfig.DOWNLOAD_THREADS, result.chunkCount()));
-            try {
-                List<Future<?>> futures = new ArrayList<>();
-                for (int chunkIndex = 0; chunkIndex < result.chunkCount(); chunkIndex++) {
-                    final int currentChunk = chunkIndex;
-                    futures.add(executor.submit(() -> {
-                        byte[] bytes = fetchChunkWithRetry(result, currentChunk, candidatePeers);
-                        try {
-                            channel.write(ByteBuffer.wrap(bytes), (long) currentChunk * result.chunkSize());
-                        } catch (IOException exception) {
-                            throw new IllegalStateException("Failed to write chunk " + currentChunk, exception);
-                        }
-                        int done = completedChunks.incrementAndGet();
-                        progressCallback.accept(done / (double) result.chunkCount());
-                        statusCallback.accept("Downloaded chunk " + done + " of " + result.chunkCount());
-                    }));
-                }
-
-                for (Future<?> future : futures) {
-                    future.get();
-                }
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Download interrupted", exception);
-            } catch (ExecutionException exception) {
-                Files.deleteIfExists(workingTarget);
-                clientDatabase.recordDownload(result.filename(), peerSummary, destination.toAbsolutePath().toString(), "FAILED");
-                throw new IOException("Download failed: " + exception.getCause().getMessage(), exception.getCause());
-            } finally {
-                executor.shutdownNow();
-            }
-        }
-
         try {
+            if (result.chunkCount() == 0) {
+                Files.write(workingTarget, new byte[0], StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            } else {
+                statusCallback.accept("Preparing " + result.chunkCount() + " chunk(s)");
+                try (FileChannel channel = FileChannel.open(workingTarget,
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE)) {
+                    channel.truncate(result.size());
+                    AtomicInteger completedChunks = new AtomicInteger();
+                    ExecutorService executor = Executors.newFixedThreadPool(Math.min(AppConfig.DOWNLOAD_THREADS, result.chunkCount()));
+                    try {
+                        List<Future<?>> futures = new ArrayList<>();
+                        for (int chunkIndex = 0; chunkIndex < result.chunkCount(); chunkIndex++) {
+                            final int currentChunk = chunkIndex;
+                            futures.add(executor.submit(() -> {
+                                byte[] bytes = fetchChunkWithRetry(result, currentChunk, candidatePeers);
+                                try {
+                                    channel.write(ByteBuffer.wrap(bytes), (long) currentChunk * result.chunkSize());
+                                } catch (IOException exception) {
+                                    throw new IllegalStateException("Failed to write chunk " + currentChunk, exception);
+                                }
+                                int done = completedChunks.incrementAndGet();
+                                progressCallback.accept(done / (double) result.chunkCount());
+                                statusCallback.accept("Downloaded chunk " + done + " of " + result.chunkCount());
+                            }));
+                        }
+
+                        for (Future<?> future : futures) {
+                            future.get();
+                        }
+                    } catch (InterruptedException exception) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("Download interrupted", exception);
+                    } catch (ExecutionException exception) {
+                        throw new IOException("Download failed: " + exception.getCause().getMessage(), exception.getCause());
+                    } finally {
+                        executor.shutdownNow();
+                    }
+                }
+            }
+
             verifyDownloadedFileId(result, workingTarget);
 
             if (result.encrypted()) {
@@ -298,8 +306,7 @@ public class PeerNode {
                 }
             }
         } catch (IOException exception) {
-            Files.deleteIfExists(workingTarget);
-            Files.deleteIfExists(destination);
+            cleanupDownloadArtifacts(workingTarget, destination);
             clientDatabase.recordDownload(result.filename(), peerSummary, destination.toAbsolutePath().toString(), "FAILED");
             throw exception;
         }
@@ -315,7 +322,7 @@ public class PeerNode {
     }
 
     public List<TrackerRecord> fetchTrackerRecords() throws IOException {
-        try (Socket socket = new Socket(trackerHost, trackerPort);
+        try (Socket socket = openTrackerSocket();
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
             output.writeUTF(ProtocolCommands.LIST_RECORDS);
@@ -371,7 +378,7 @@ public class PeerNode {
             clearSharedFiles();
             return;
         }
-        try (Socket socket = new Socket(trackerHost, trackerPort);
+        try (Socket socket = openTrackerSocket();
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
             output.writeUTF(ProtocolCommands.DISCONNECT);
@@ -405,7 +412,7 @@ public class PeerNode {
         if (sessionToken == null) {
             throw new IOException("Peer session is not established");
         }
-        try (Socket socket = new Socket(trackerHost, trackerPort);
+        try (Socket socket = openTrackerSocket();
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
             output.writeUTF(ProtocolCommands.REGISTER);
@@ -447,8 +454,12 @@ public class PeerNode {
     }
 
     private Path buildEncryptedCopy(Path originalFile, String password) throws IOException {
-        String safeName = originalFile.getFileName().toString() + ".p2penc";
-        Path encryptedTarget = encryptedFilesDirectory.resolve(safeName);
+        String fileName = originalFile.getFileName().toString();
+        String tempPrefix = sanitizeForPath(fileName);
+        if (tempPrefix.length() < 3) {
+            tempPrefix = (tempPrefix + "enc").substring(0, 3);
+        }
+        Path encryptedTarget = Files.createTempFile(encryptedFilesDirectory, tempPrefix + "-", ".p2penc");
         encryptFile(originalFile, encryptedTarget, password);
         return encryptedTarget;
     }
@@ -482,7 +493,7 @@ public class PeerNode {
         for (int attempt = 0; attempt < orderedPeers.size(); attempt++) {
             PeerInfo peer = orderedPeers.get((startIndex + attempt) % orderedPeers.size());
             try {
-                return fetchChunk(peer, result.fileId(), result.filename(), chunkIndex);
+                return fetchChunk(peer, result, chunkIndex);
             } catch (IOException exception) {
                 lastException = exception;
                 if (attempt == orderedPeers.size() - 1) {
@@ -496,7 +507,7 @@ public class PeerNode {
                 (lastException == null ? "" : ". Last error: " + ThrowableUtils.rootCauseMessage(lastException)));
     }
 
-    private byte[] fetchChunk(PeerInfo peer, String fileId, String filename, int chunkIndex) throws IOException {
+    private byte[] fetchChunk(PeerInfo peer, SearchResult result, int chunkIndex) throws IOException {
         try (Socket socket = new Socket()) {
             SocketAddress socketAddress = new InetSocketAddress(peer.host(), peer.port());
             socket.connect(socketAddress, SOCKET_CONNECT_TIMEOUT_MS);
@@ -505,7 +516,7 @@ public class PeerNode {
             try (DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
                  DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
                 output.writeUTF(ProtocolCommands.CHUNK);
-                output.writeUTF(fileId);
+                output.writeUTF(result.fileId());
                 output.writeInt(chunkIndex);
                 output.flush();
 
@@ -517,7 +528,15 @@ public class PeerNode {
                 int returnedChunkIndex = input.readInt();
                 int length = input.readInt();
                 if (returnedChunkIndex != chunkIndex) {
-                    throw new IOException("Chunk mismatch for " + filename + ": expected " + chunkIndex + " but received " + returnedChunkIndex);
+                    throw new IOException("Chunk mismatch for " + result.filename() + ": expected " + chunkIndex + " but received " + returnedChunkIndex);
+                }
+                int expectedChunkLength = expectedChunkLength(result, chunkIndex);
+                if (expectedChunkLength <= 0) {
+                    throw new IOException("Chunk index out of range for " + result.filename() + ": " + chunkIndex);
+                }
+                if (length <= 0 || length > expectedChunkLength) {
+                    throw new IOException("Invalid chunk length for " + result.filename() + ": expected 1.." +
+                            expectedChunkLength + " but received " + length);
                 }
 
                 byte[] buffer = new byte[length];
@@ -552,7 +571,7 @@ public class PeerNode {
     }
 
     private static String resolveTrackerSessionId(String host, int port) throws IOException {
-        try (Socket socket = new Socket(host, port);
+        try (Socket socket = openSocket(host, port);
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
             output.writeUTF(ProtocolCommands.PING);
@@ -562,6 +581,34 @@ public class PeerNode {
                 throw new IOException("Tracker did not return a healthy session handshake");
             }
             return input.readUTF();
+        }
+    }
+
+    private Socket openTrackerSocket() throws IOException {
+        return openSocket(trackerHost, trackerPort);
+    }
+
+    private static Socket openSocket(String host, int port) throws IOException {
+        Socket socket = new Socket();
+        socket.connect(new InetSocketAddress(host, port), SOCKET_CONNECT_TIMEOUT_MS);
+        socket.setSoTimeout(SOCKET_READ_TIMEOUT_MS);
+        return socket;
+    }
+
+    private static int expectedChunkLength(SearchResult result, int chunkIndex) {
+        long chunkOffset = (long) chunkIndex * result.chunkSize();
+        long remaining = result.size() - chunkOffset;
+        return (int) Math.min(result.chunkSize(), Math.max(0L, remaining));
+    }
+
+    private static void cleanupDownloadArtifacts(Path workingTarget, Path destination) {
+        try {
+            Files.deleteIfExists(workingTarget);
+        } catch (IOException ignored) {
+        }
+        try {
+            Files.deleteIfExists(destination);
+        } catch (IOException ignored) {
         }
     }
 
@@ -591,7 +638,7 @@ public class PeerNode {
     }
 
     private String openPeerSession() throws IOException {
-        try (Socket socket = new Socket(trackerHost, trackerPort);
+        try (Socket socket = openTrackerSocket();
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
             output.writeUTF(ProtocolCommands.HELLO);
@@ -636,7 +683,7 @@ public class PeerNode {
         if (sessionToken == null) {
             return;
         }
-        try (Socket socket = new Socket(trackerHost, trackerPort);
+        try (Socket socket = openTrackerSocket();
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
             output.writeUTF(ProtocolCommands.HEARTBEAT);

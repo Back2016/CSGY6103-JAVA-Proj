@@ -118,8 +118,23 @@ public class PeerServer {
             return;
         }
 
+        if (chunkIndex < 0) {
+            output.writeBoolean(false);
+            output.writeUTF("Chunk index cannot be negative");
+            output.flush();
+            return;
+        }
+
         long offset = (long) chunkIndex * AppConfig.DEFAULT_CHUNK_SIZE;
         long fileSize = Files.size(path);
+        int chunkCount = (int) Math.ceil((double) fileSize / AppConfig.DEFAULT_CHUNK_SIZE);
+        if (chunkIndex >= chunkCount || offset >= fileSize) {
+            output.writeBoolean(false);
+            output.writeUTF("Chunk index out of range");
+            output.flush();
+            return;
+        }
+
         int length = (int) Math.min(AppConfig.DEFAULT_CHUNK_SIZE, fileSize - offset);
         if (length <= 0) {
             output.writeBoolean(false);

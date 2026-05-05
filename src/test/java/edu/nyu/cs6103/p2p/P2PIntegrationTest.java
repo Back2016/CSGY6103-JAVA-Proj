@@ -102,6 +102,55 @@ class P2PIntegrationTest {
     }
 
     @Test
+    void zeroByteFileDownload_shouldCompleteWithoutThreadPoolErrors() throws Exception {
+        int trackerPort = findFreePort();
+        int peerOnePort = findFreePort();
+        int peerTwoPort = findFreePort();
+        Path trackerDbPath = tempDir.resolve("zero-byte-test.db");
+        TrackerDatabase trackerDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
+        startTrackerInBackground(trackerPort, trackerDatabase);
+        waitForTrackerStartup(trackerPort);
+
+        PeerNode peerOne = new PeerNode(
+                "peer-zero-one",
+                "localhost",
+                trackerPort,
+                peerOnePort,
+                tempDir.resolve("zero-peer-one-records"),
+                tempDir.resolve("zero-peer-one-downloads")
+        );
+        PeerNode peerTwo = new PeerNode(
+                "peer-zero-two",
+                "localhost",
+                trackerPort,
+                peerTwoPort,
+                tempDir.resolve("zero-peer-two-records"),
+                tempDir.resolve("zero-peer-two-downloads")
+        );
+
+        peerOne.startServer();
+        peerTwo.startServer();
+        try {
+            Path emptyFile = tempDir.resolve("empty.txt");
+            Files.write(emptyFile, new byte[0]);
+
+            peerOne.shareFile(emptyFile);
+
+            SearchResult result = waitForSearchResult(peerTwo, "empty.txt");
+            assertNotNull(result);
+            assertEquals(0L, result.size());
+            assertEquals(0, result.chunkCount());
+
+            Path downloaded = peerTwo.download(result, progress -> { }, status -> { });
+            assertTrue(Files.exists(downloaded));
+            assertEquals(0L, Files.size(downloaded));
+        } finally {
+            peerOne.stopServer();
+            peerTwo.stopServer();
+        }
+    }
+
+    @Test
     void sameFilenameDifferentContent_shouldReturnSeparateSearchResults() throws Exception {
         int trackerPort = findFreePort();
         int peerOnePort = findFreePort();
@@ -335,6 +384,49 @@ class P2PIntegrationTest {
 
         assertFalse(response.success());
         assertTrue(response.message().contains("session"));
+    }
+
+    @Test
+    void failedEncryptedShare_shouldCleanTemporaryCopyAndAvoidDirtyMapping() throws Exception {
+        int trackerPort = findFreePort();
+        Path trackerDbPath = tempDir.resolve("share-cleanup.db");
+        TrackerDatabase trackerDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
+        startTrackerInBackground(trackerPort, trackerDatabase);
+        waitForTrackerStartup(trackerPort);
+
+        Path trackerRecordsDir = tempDir.resolve("cleanup-tracker-records");
+        PeerNode peer = new PeerNode(
+                "peer-cleanup",
+                "localhost",
+                trackerPort,
+                "cleanup-session",
+                findFreePort(),
+                "127.0.0.1",
+                trackerRecordsDir,
+                tempDir.resolve("cleanup-downloads")
+        );
+        peer.startServer();
+
+        Path sharedFile = tempDir.resolve("cleanup.txt");
+        Files.writeString(sharedFile, "cleanup-content".repeat(100));
+
+        trackers.get(trackers.size() - 1).stop();
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> peer.shareFile(sharedFile, "secret"));
+            assertTrue(exception.getMessage().toLowerCase().contains("session")
+                    || exception.getMessage().toLowerCase().contains("connection"));
+            assertTrue(peer.getSharedFileNames().isEmpty());
+
+            Path encryptedDir = trackerRecordsDir.resolve("localhost_" + trackerPort + "_cleanup-session").resolve("shared_encrypted");
+            if (Files.exists(encryptedDir)) {
+                try (var paths = Files.list(encryptedDir)) {
+                    assertTrue(paths.findAny().isEmpty());
+                }
+            }
+        } finally {
+            peer.stopServer();
+        }
     }
 
     @Test

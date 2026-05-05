@@ -44,6 +44,7 @@ import java.io.DataOutputStream;
 import java.awt.Desktop;
 import java.io.IOException;
 import java.net.Socket;
+import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.DecimalFormat;
@@ -55,6 +56,8 @@ public class MainApp extends Application {
     private static final Path DEFAULT_TRACKER_RECORDS_DIR = APP_HOME.resolve("trackerRecords");
     private static final Path DEFAULT_DOWNLOADS_DIR = APP_HOME.resolve("downloads");
     private static final Path DEFAULT_TRACKER_DB = APP_HOME.resolve("tracker").resolve("tracker.db");
+    private static final int SOCKET_CONNECT_TIMEOUT_MS = 3000;
+    private static final int SOCKET_READ_TIMEOUT_MS = 5000;
 
     private final ObservableList<String> sharedFiles = FXCollections.observableArrayList();
     private final ObservableList<SearchResult> searchResults = FXCollections.observableArrayList();
@@ -242,19 +245,35 @@ public class MainApp extends Application {
                 statusLabel.setText("No local tracker is running");
                 return;
             }
-            if (trackerConnected && isCurrentTrackerLocal(trackerHostField.getText().trim(), peerHostField.getText().trim())) {
-                disconnectTrackerButton.fire();
+            String warning = null;
+            if (trackerConnected && peerNode != null && isCurrentTrackerLocal(trackerHostField.getText().trim(), peerHostField.getText().trim())) {
+                try {
+                    peerNode.unregisterFromTracker();
+                } catch (IOException exception) {
+                    warning = exception.getMessage();
+                    peerNode.clearSharedFiles();
+                } finally {
+                    peerNode.stopServer();
+                }
+                peerNode = null;
+                trackerConnected = false;
+                sharedFiles.clear();
+                searchResults.clear();
             }
             localTrackerServer.stop();
             localTrackerRunning = false;
-            stopLocalTrackerButton.setDisable(true);
-            startLocalTrackerButton.setDisable(false);
+            localTrackerServer = null;
             trackerRecords.clear();
+            applyDisconnectedState(connectTrackerButton, checkTrackerButton, disconnectTrackerButton,
+                    trackerHostField, trackerPortField, peerPortField, peerIdField, peerHostField,
+                    trackerRecordsDirField, downloadsDirField,
+                    chooseTrackerRecordsDirButton, chooseDownloadsDirButton, shareFileButton, searchButton,
+                    downloadButton, refreshHistoryButton, refreshTrackerRecordsButton, openDownloadPathButton,
+                    progressBar, statusLabel, readinessPill);
             statusLabel.setText("Local tracker stopped");
             appendLog(logArea, "Stopped local tracker on port " + trackerPortField.getText().trim());
-            if (!trackerConnected) {
-                readinessPill.setText("Tracker Disconnected");
-                readinessPill.setStyle(pillStyle("#fde68a", "#7c5a00"));
+            if (warning != null) {
+                appendLog(logArea, "Tracker unregister failed while stopping local tracker: " + warning);
             }
         });
 
@@ -453,11 +472,6 @@ public class MainApp extends Application {
                 return;
             }
 
-            shareFileButton.setDisable(true);
-            searchButton.setDisable(true);
-            downloadButton.setDisable(true);
-            refreshHistoryButton.setDisable(true);
-            appendLog(logArea, "Starting download for " + selected.filename() + " from peers: " + peerNode.describeRemotePeers(selected));
             String downloadPassword = "";
             if (selected.encrypted()) {
                 downloadPassword = promptForDownloadPassword(stage, selected);
@@ -467,6 +481,12 @@ public class MainApp extends Application {
                 }
             }
             final String finalDownloadPassword = downloadPassword;
+
+            shareFileButton.setDisable(true);
+            searchButton.setDisable(true);
+            downloadButton.setDisable(true);
+            refreshHistoryButton.setDisable(true);
+            appendLog(logArea, "Starting download for " + selected.filename() + " from peers: " + peerNode.describeRemotePeers(selected));
 
             Task<Path> downloadTask = new Task<>() {
                 @Override
@@ -658,6 +678,24 @@ public class MainApp extends Application {
         stage.setMinHeight(760);
         stage.setTitle("Peer-to-Peer File Sharing System");
         stage.setScene(scene);
+        stage.setOnCloseRequest(event -> {
+            if (peerNode != null) {
+                try {
+                    peerNode.unregisterFromTracker();
+                } catch (IOException ignored) {
+                    peerNode.clearSharedFiles();
+                } finally {
+                    peerNode.stopServer();
+                    peerNode = null;
+                    trackerConnected = false;
+                }
+            }
+            if (localTrackerServer != null) {
+                localTrackerServer.stop();
+                localTrackerServer = null;
+                localTrackerRunning = false;
+            }
+        });
         stage.show();
     }
 
@@ -905,7 +943,7 @@ public class MainApp extends Application {
     }
 
     private static boolean pingTracker(String host, int port) throws IOException {
-        try (Socket socket = new Socket(host, port);
+        try (Socket socket = openSocket(host, port);
              DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
             output.writeUTF(ProtocolCommands.PING);
@@ -920,6 +958,13 @@ public class MainApp extends Application {
             }
             return healthy;
         }
+    }
+
+    private static Socket openSocket(String host, int port) throws IOException {
+        Socket socket = new Socket();
+        socket.connect(new InetSocketAddress(host, port), SOCKET_CONNECT_TIMEOUT_MS);
+        socket.setSoTimeout(SOCKET_READ_TIMEOUT_MS);
+        return socket;
     }
 
     private static String suggestPeerHost() {
