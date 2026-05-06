@@ -179,6 +179,19 @@ public class TrackerDatabase {
         }
     }
 
+    public synchronized int countActivePeers() {
+        String sql = "SELECT COUNT(*) FROM peer_sessions WHERE last_seen_at >= ?";
+        try (Connection connection = DriverManager.getConnection(jdbcUrl);
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, activeCutoff());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? resultSet.getInt(1) : 0;
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Failed to count active peers", exception);
+        }
+    }
+
     public synchronized void clearPeerSessionsAndFiles() {
         try (Connection connection = DriverManager.getConnection(jdbcUrl);
              Statement statement = connection.createStatement()) {

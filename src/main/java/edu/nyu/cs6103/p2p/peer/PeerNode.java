@@ -295,6 +295,10 @@ public class PeerNode {
         return clientDatabase.listHistory();
     }
 
+    public int fetchPeerCount() throws IOException {
+        return trackerClient.peerCount();
+    }
+
     public List<TrackerRecord> fetchTrackerRecords() throws IOException {
         List<TrackerRecord> records = trackerClient.listRecords();
         writeTrackerRecordsCsv(records);

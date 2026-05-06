@@ -1,5 +1,7 @@
 # P2P File Sharing System
 
+**Group Members:** Yuxin Zhu (yz11952) · Yinkui Yu (yy5612) · Kai-En Huang (kh4552)
+
 This project is a Java peer-to-peer file sharing system with a central tracker, a JavaFX desktop client, parallel chunk downloads, optional per-file encryption, and session-based tracker records.
 
 The codebase is organized around a simple workflow:
@@ -210,40 +212,70 @@ This is the best place to look when a workflow does not behave as expected.
 - `packaging`
   portable launcher assets.
 
+## Advanced Concepts
+
+- **Networking** — All communication is built on raw TCP sockets. Peers open socket connections to the tracker for registration, search, and heartbeat commands. Peers also connect directly to each other to serve and fetch file chunks, without routing through the tracker.
+
+- **Multithreading** — File chunks are downloaded in parallel across multiple threads using a fixed thread pool (`ExecutorService`). The tracker server handles each incoming peer connection on a separate thread. The peer server runs an independent thread pool to serve concurrent chunk upload requests from multiple downloaders simultaneously.
+
+- **Synchronization** — Shared mutable state is protected across threads. All tracker database methods are `synchronized` to prevent concurrent write conflicts. Fields accessed from both the UI thread and background threads use `volatile`. Chunk progress tracking during parallel downloads uses thread-safe coordination to detect completion and errors across worker threads.
+
+- **GUI** — The desktop interface is built with JavaFX. It uses an event-driven model with observable lists, background `Task` objects for non-blocking operations, and live property bindings to reflect download progress and status updates in real time.
+
+- **Database** — SQLite is used via JDBC for two separate stores: the tracker database persists peer sessions and shared file metadata, and the client database stores local download history. Both are queried and updated at runtime without requiring an external database server.
+
 ## Requirements
 
 - Java 17 or newer
-- Maven 3.9 or newer
 - JavaFX
 - SQLite JDBC
 
+Maven is bundled via Maven Wrapper (`mvnw` / `mvnw.cmd`). No separate Maven installation is needed.
+
 ## Build And Test
 
-Check your local tools:
+Check your Java version:
 
 ```bash
 java -version
-mvn -version
 ```
 
 Build the project:
 
+Windows:
 ```bash
-mvn clean compile
+.\mvnw.cmd clean compile
+```
+
+Mac / Linux:
+```bash
+./mvnw clean compile
 ```
 
 Run the test suite:
 
+Windows:
 ```bash
-mvn test
+.\mvnw.cmd test
+```
+
+Mac / Linux:
+```bash
+./mvnw test
 ```
 
 ## How To Run
 
 ### Start the tracker from the terminal
 
+Windows:
 ```bash
-mvn exec:java -Dexec.mainClass=edu.nyu.cs6103.p2p.tracker.TrackerServerMain
+.\mvnw.cmd exec:java -Dexec.mainClass=edu.nyu.cs6103.p2p.tracker.TrackerServerMain
+```
+
+Mac / Linux:
+```bash
+./mvnw exec:java -Dexec.mainClass=edu.nyu.cs6103.p2p.tracker.TrackerServerMain
 ```
 
 Default tracker port:
@@ -252,16 +284,28 @@ Default tracker port:
 
 You can pass a custom port:
 
+Windows:
 ```bash
-mvn exec:java -Dexec.mainClass=edu.nyu.cs6103.p2p.tracker.TrackerServerMain -Dexec.args="5051"
+.\mvnw.cmd exec:java -Dexec.mainClass=edu.nyu.cs6103.p2p.tracker.TrackerServerMain -Dexec.args="5051"
+```
+
+Mac / Linux:
+```bash
+./mvnw exec:java -Dexec.mainClass=edu.nyu.cs6103.p2p.tracker.TrackerServerMain -Dexec.args="5051"
 ```
 
 The terminal tracker stores its SQLite file as `tracker.db` in the current working directory.
 
 ### Start the GUI client
 
+Windows:
 ```bash
-mvn javafx:run
+.\mvnw.cmd javafx:run
+```
+
+Mac / Linux:
+```bash
+./mvnw javafx:run
 ```
 
 In the GUI:
@@ -379,8 +423,14 @@ The integration tests cover:
 
 Run the tests with:
 
+Windows:
 ```bash
-mvn test
+.\mvnw.cmd test
+```
+
+Mac / Linux:
+```bash
+./mvnw test
 ```
 
 ## Packaging
