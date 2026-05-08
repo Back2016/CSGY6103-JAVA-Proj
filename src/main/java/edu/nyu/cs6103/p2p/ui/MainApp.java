@@ -105,7 +105,7 @@ public class MainApp extends Application {
         Button downloadButton = primaryButton("Download Selected");
         Button refreshHistoryButton = secondaryButton("Refresh");
         Button refreshTrackerRecordsButton = secondaryButton("Refresh Records");
-        Button loadTrackerRecordsCsvButton = secondaryButton("Read CSV");
+        Button loadTrackerRecordsCsvButton = secondaryButton("Read Past Records");
         Button openDownloadPathButton = secondaryButton("Open Folder");
 
         shareFileButton.setDisable(true);
@@ -599,7 +599,7 @@ public class MainApp extends Application {
             }
         });
         loadTrackerRecordsCsvButton.setOnAction(event ->
-                showTrackerRecordsCsvDialog(stage, resolveTrackerRecordsCsvPath(trackerRecordsDirField, logArea), logArea));
+                showTrackerRecordsCsvDialog(stage, chooseTrackerRecordsCsv(stage, trackerRecordsDirField), logArea));
         openDownloadPathButton.setOnAction(event -> {
             DownloadHistoryEntry selected = historyListView.getSelectionModel().getSelectedItem();
             if (selected != null) {
@@ -689,7 +689,7 @@ public class MainApp extends Application {
 
         VBox trackerRecordsCard = card(
                 trackerRecordsHeader,
-                helperLabel("Tracker metadata records include file info, peer availability, and chunk record details."),
+                helperLabel("Tracker metadata records below are the live records from the currently connected tracker. Use Read Past Records to open an older saved tracker_records.csv file."),
                 trackerRecordsListView
         );
         VBox.setVgrow(trackerRecordsListView, Priority.ALWAYS);
@@ -1023,29 +1023,22 @@ public class MainApp extends Application {
         }
     }
 
-    private Path resolveTrackerRecordsCsvPath(TextField trackerRecordsDirField, TextArea logArea) {
-        if (peerNode != null) {
-            return peerNode.getTrackerRecordsCsvPath();
+    private Path chooseTrackerRecordsCsv(Stage owner, TextField trackerRecordsDirField) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Choose Past tracker_records.csv");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV Files", "*.csv"));
+        Path initialDir = Path.of(trackerRecordsDirField.getText().trim());
+        if (Files.exists(initialDir)) {
+            chooser.setInitialDirectory(initialDir.toFile());
         }
-        try {
-            Path baseDir = Path.of(trackerRecordsDirField.getText().trim());
-            if (!Files.exists(baseDir)) {
-                appendLog(logArea, "Tracker records folder does not exist yet: " + baseDir);
-                return null;
-            }
-            return Files.walk(baseDir, 2)
-                    .filter(path -> path.getFileName().toString().equals("tracker_records.csv"))
-                    .max(Comparator.comparingLong(path -> path.toFile().lastModified()))
-                    .orElse(null);
-        } catch (IOException exception) {
-            appendLog(logArea, "Could not search tracker records folder: " + exception.getMessage());
-            return null;
-        }
+        chooser.setInitialFileName("tracker_records.csv");
+        var selected = chooser.showOpenDialog(owner);
+        return selected == null ? null : selected.toPath();
     }
 
     private void showTrackerRecordsCsvDialog(Stage owner, Path csvPath, TextArea logArea) {
         if (csvPath == null) {
-            appendLog(logArea, "No tracker_records.csv file was found to load.");
+            appendLog(logArea, "Past tracker records selection cancelled.");
             return;
         }
         try {
@@ -1070,8 +1063,8 @@ public class MainApp extends Application {
 
             Alert alert = new Alert(Alert.AlertType.INFORMATION);
             alert.initOwner(owner);
-            alert.setTitle("Tracker Records CSV");
-            alert.setHeaderText("Loaded " + records.size() + " tracker record(s) from " + csvPath.getFileName());
+            alert.setTitle("Past Tracker Records");
+            alert.setHeaderText("Loaded " + records.size() + " tracker record(s) from " + csvPath.toAbsolutePath());
             ListView<String> listView = new ListView<>(FXCollections.observableArrayList(records));
             listView.setPrefWidth(760);
             listView.setPrefHeight(420);
