@@ -15,8 +15,8 @@ The codebase is organized around a simple workflow:
 ## What The App Does
 
 - Check tracker health, connect to a tracker, disconnect, and run a local tracker from the GUI.
-- Share files by content hash instead of by filename alone.
-- Keep same-name files with different content separate.
+- Assign every shared file a unique `fileId` instead of relying on filename alone.
+- Keep same-name files separate, even when they come from different peers.
 - Support optional per-file password encryption when sharing.
 - Search files through the tracker and download them from other peers.
 - Download files in parallel chunk-by-chunk.
@@ -24,15 +24,17 @@ The codebase is organized around a simple workflow:
 - Verify downloaded content by SHA-256 hash before marking the download complete.
 - Export tracker records and local download history to CSV files.
 - Open the containing folder for a selected download entry from the GUI.
+- Read older saved `tracker_records.csv` files from past tracker sessions.
 
 ## Key Behavior
 
-- `fileId` is the SHA-256 hash of the actual shared payload.
-- Encrypted shares are hashed after encryption, so the same plaintext with different passwords becomes a different share.
+- `fileId` is a unique share identifier generated per shared file.
+- `contentHash` is the SHA-256 hash of the actual shared payload and is used to verify downloads.
+- Encrypted shares are hashed after encryption, so the same plaintext with different passwords becomes a different payload hash.
 - Tracker records are session-scoped and show metadata only.
 - Tracker records do not expose another user’s original absolute local path.
-- `tracker_records.csv` contains file metadata, peer list, and chunk layout summary for the current session.
-- `download_history.csv` is local to the downloading peer and stores the destination path on that machine.
+- `tracker_records.csv` contains file metadata, unique share ids, content hashes, peer list, and chunk layout summary for the current session.
+- `download_history.csv` is local to the downloading peer and stores the file id, source peers, destination path, and status on that machine.
 - Peer sessions are kept alive with heartbeats and expire automatically if they stop updating.
 - `Disconnect Tracker` unregisters the current peer’s shared files from the tracker and clears local shared-file state.
 - `Stop Tracker Here` stops the local tracker and disconnects the current peer first to reduce stale registrations.
@@ -41,22 +43,23 @@ The codebase is organized around a simple workflow:
 
 ### Sharing
 
-- The peer computes a SHA-256 hash for the file that is actually being shared.
+- The peer generates a unique `fileId` for each share action.
+- The peer also computes a SHA-256 `contentHash` for the exact payload being shared.
 - For encrypted sharing, the peer creates a temporary encrypted copy first.
 - Only after tracker registration succeeds does the peer keep the file in its shared-file map.
 - If registration fails, the temporary encrypted copy is deleted.
 
 ### Searching
 
-- The tracker stores shared files by `fileId`, filename, size, chunk size, chunk count, encrypted flag, and session token.
+- The tracker stores shared files by `fileId`, `contentHash`, filename, size, chunk size, chunk count, encrypted flag, and session token.
 - Search results are grouped by `fileId`.
-- This prevents same-name files with different content from being merged into one result.
+- This prevents same-name files from being overwritten or merged into one result.
 
 ### Downloading
 
 - Downloads are split into chunks and fetched in parallel.
 - Each chunk request is validated for chunk index and returned length.
-- The downloaded file is re-hashed before the app marks the transfer successful.
+- The downloaded file is re-hashed and checked against `contentHash` before the app marks the transfer successful.
 - If the file is encrypted, the decrypted output is written only after the encrypted payload is verified.
 - Failed downloads clean up partial files and working temporary files.
 
@@ -128,6 +131,7 @@ How to use it:
 3. Select a search result.
 4. Click `Download Selected`, or double-click a result.
 5. If the file is encrypted, enter the password when prompted.
+6. If multiple files have the same visible filename, use the short ID shown in the UI to tell them apart.
 
 ### 4. Transfer Status
 
@@ -147,20 +151,30 @@ This card shows the tracker-side view of shared metadata for the current session
 It contains:
 
 - `Refresh Records`
+- `Read Past Records`
 - tracker record list
 
 What it is for:
 
 - show what the tracker currently sees as available
-- display file metadata such as filename, `fileId`, chunk count, and encryption flag
+- display file metadata such as filename, `fileId`, `contentHash`, chunk count, and encryption flag
 - show which peers are advertising the file
 - summarize chunk layout information for the file
+- load an older saved `tracker_records.csv` file from a previous tracker session
 
 What it is not:
 
 - it is not a download history
 - it is not a file access log
 - it does not expose the original absolute local path of another user
+
+How `Read Past Records` works:
+
+1. Click `Read Past Records`.
+2. Choose a previously saved `tracker_records.csv` file from the tracker records folder.
+3. The app opens a dialog and lists the historical tracker records stored in that CSV.
+
+This is separate from the live `Tracker Records` panel, which always shows the current connected tracker state.
 
 ### 6. Download History
 
@@ -175,7 +189,7 @@ It contains:
 What it is for:
 
 - show what this peer has downloaded locally
-- record the source peers, destination path, and status
+- record the file id, source peers, destination path, and status
 - open the folder containing the selected download
 
 This history is local to the current peer. It is not shared to the tracker.

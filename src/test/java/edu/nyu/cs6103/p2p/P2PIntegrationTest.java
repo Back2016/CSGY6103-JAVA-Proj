@@ -89,7 +89,7 @@ class P2PIntegrationTest {
         SearchResult result = waitForSearchResult(peerTwo, "sample.txt");
         assertNotNull(result);
         assertEquals("sample.txt", result.filename());
-        assertEquals(HashingUtils.sha256(sharedFile), result.fileId());
+        assertEquals(HashingUtils.sha256(sharedFile), result.contentHash());
         assertFalse(result.peers().isEmpty());
 
         AtomicReference<String> lastStatus = new AtomicReference<>("pending");
@@ -272,6 +272,7 @@ class P2PIntegrationTest {
         SearchResult result = new SearchResult(
                 "retry.bin",
                 fileId,
+                fileId,
                 content.length,
                 AppConfig.DEFAULT_CHUNK_SIZE,
                 (int) Math.ceil((double) content.length / AppConfig.DEFAULT_CHUNK_SIZE),
@@ -316,6 +317,7 @@ class P2PIntegrationTest {
         SearchResult result = new SearchResult(
                 "multi.bin",
                 fileId,
+                fileId,
                 content.length,
                 AppConfig.DEFAULT_CHUNK_SIZE,
                 (int) Math.ceil((double) content.length / AppConfig.DEFAULT_CHUNK_SIZE),
@@ -340,7 +342,7 @@ class P2PIntegrationTest {
         TrackerDatabase staleDatabase = new TrackerDatabase("jdbc:sqlite:" + trackerDbPath.toAbsolutePath());
         String staleSessionToken = staleDatabase.openPeerSession("old-peer", "localhost", 6060);
         staleDatabase.registerSharedFile(
-                new SharedFileDescriptor("stale-file-id", "stale.txt", 128, AppConfig.DEFAULT_CHUNK_SIZE, 1, false),
+                new SharedFileDescriptor("stale-file-id", "stale-content-hash", "stale.txt", 128, AppConfig.DEFAULT_CHUNK_SIZE, 1, false),
                 staleSessionToken);
         assertEquals(1, staleDatabase.searchFiles("stale").size());
 
@@ -402,6 +404,7 @@ class P2PIntegrationTest {
         SearchResult result = new SearchResult(
                 "corrupt.bin",
                 expectedFileId,
+                expectedFileId,
                 expectedContent.length,
                 AppConfig.DEFAULT_CHUNK_SIZE,
                 (int) Math.ceil((double) expectedContent.length / AppConfig.DEFAULT_CHUNK_SIZE),
@@ -414,7 +417,7 @@ class P2PIntegrationTest {
 
         Path expectedDownload = downloadsDir.resolve("corrupt.bin");
         IOException exception = assertThrows(IOException.class, () -> downloader.download(result, progress -> { }, status -> { }));
-        assertTrue(exception.getMessage().contains("fileId"));
+        assertTrue(exception.getMessage().toLowerCase().contains("content hash"));
         assertDownloadArtifactsAbsent(expectedDownload);
     }
 
@@ -476,7 +479,7 @@ class P2PIntegrationTest {
         TrackerResponse response = sendRegisterRequest(
                 trackerPort,
                 "invalid-session-token",
-                new SharedFileDescriptor("invalid-file-id", "invalid.txt", 64, AppConfig.DEFAULT_CHUNK_SIZE, 1, false)
+                new SharedFileDescriptor("invalid-file-id", "invalid-content-hash", "invalid.txt", 64, AppConfig.DEFAULT_CHUNK_SIZE, 1, false)
         );
 
         assertFalse(response.success());
@@ -551,6 +554,7 @@ class P2PIntegrationTest {
         String sessionToken = openPeerSession(trackerPort, "peer-expired", "127.0.0.1", 6060);
         byte[] content = buildBytes(AppConfig.DEFAULT_CHUNK_SIZE + 512);
         SharedFileDescriptor descriptor = new SharedFileDescriptor(
+                java.util.UUID.randomUUID().toString(),
                 HashingUtils.sha256Hex(content),
                 "expiring.txt",
                 content.length,
@@ -676,6 +680,7 @@ class P2PIntegrationTest {
             output.writeUTF(ProtocolCommands.REGISTER);
             output.writeUTF(sessionToken);
             output.writeUTF(descriptor.fileId());
+            output.writeUTF(descriptor.contentHash());
             output.writeUTF(descriptor.filename());
             output.writeLong(descriptor.size());
             output.writeInt(descriptor.chunkSize());

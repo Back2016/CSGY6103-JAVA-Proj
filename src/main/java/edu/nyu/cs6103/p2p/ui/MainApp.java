@@ -1,6 +1,7 @@
 package edu.nyu.cs6103.p2p.ui;
 
 import edu.nyu.cs6103.p2p.common.AppConfig;
+import edu.nyu.cs6103.p2p.common.CsvUtils;
 import edu.nyu.cs6103.p2p.common.ThrowableUtils;
 import edu.nyu.cs6103.p2p.db.TrackerDatabase;
 import edu.nyu.cs6103.p2p.model.DownloadHistoryEntry;
@@ -32,6 +33,7 @@ import javafx.scene.control.Separator;
 import javafx.scene.control.TextInputDialog;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
+import javafx.scene.control.Alert;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.GridPane;
@@ -50,6 +52,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 public class MainApp extends Application {
@@ -101,7 +104,8 @@ public class MainApp extends Application {
         Button searchButton = primaryButton("Search");
         Button downloadButton = primaryButton("Download Selected");
         Button refreshHistoryButton = secondaryButton("Refresh");
-        Button refreshTrackerRecordsButton = secondaryButton("Refresh Records");
+        Button refreshTrackerRecordsButton = secondaryButton("Refresh");
+        Button loadTrackerRecordsCsvButton = secondaryButton("Load CSV");
         Button openDownloadPathButton = secondaryButton("Open Folder");
 
         shareFileButton.setDisable(true);
@@ -109,6 +113,7 @@ public class MainApp extends Application {
         downloadButton.setDisable(true);
         refreshHistoryButton.setDisable(true);
         refreshTrackerRecordsButton.setDisable(true);
+        loadTrackerRecordsCsvButton.setDisable(false);
         openDownloadPathButton.setDisable(true);
         disconnectTrackerButton.setDisable(true);
         stopLocalTrackerButton.setDisable(true);
@@ -593,6 +598,8 @@ public class MainApp extends Application {
                 refreshTrackerRecords(peerNode, logArea);
             }
         });
+        loadTrackerRecordsCsvButton.setOnAction(event ->
+                showTrackerRecordsCsvDialog(stage, chooseTrackerRecordsCsv(stage, trackerRecordsDirField), logArea));
         openDownloadPathButton.setOnAction(event -> {
             DownloadHistoryEntry selected = historyListView.getSelectionModel().getSelectedItem();
             if (selected != null) {
@@ -677,12 +684,13 @@ public class MainApp extends Application {
         HBox historyActions = new HBox(10, spacer(), openDownloadPathButton, refreshHistoryButton);
         historyActions.setAlignment(Pos.CENTER_LEFT);
 
-        HBox trackerRecordsHeader = new HBox(10, titledLabel("Tracker Records"), spacer(), peerCountLabel, refreshTrackerRecordsButton);
+        VBox trackerRecordsTitle = new VBox(2, titledLabel("Tracker Records"), peerCountLabel);
+        HBox trackerRecordsHeader = new HBox(10, trackerRecordsTitle, spacer(), loadTrackerRecordsCsvButton, refreshTrackerRecordsButton);
         trackerRecordsHeader.setAlignment(Pos.CENTER_LEFT);
 
         VBox trackerRecordsCard = card(
                 trackerRecordsHeader,
-                helperLabel("Tracker metadata records include file info, peer availability, and chunk record details."),
+                helperLabel("The list below shows live records from the connected tracker. Use Load CSV to open an older saved tracker_records.csv file."),
                 trackerRecordsListView
         );
         VBox.setVgrow(trackerRecordsListView, Priority.ALWAYS);
@@ -982,18 +990,90 @@ public class MainApp extends Application {
             appendLog(logArea, "Downloaded file is missing: " + destination);
             return;
         }
-        if (!Desktop.isDesktopSupported()) {
-            appendLog(logArea, "Desktop integration is not available on this machine.");
-            return;
-        }
         try {
             Path target = Files.isDirectory(destination) ? destination : destination.getParent();
             if (target == null) {
                 target = destination;
             }
-            Desktop.getDesktop().open(target.toFile());
+            openInFileManager(target);
         } catch (IOException exception) {
             appendLog(logArea, "Could not open download location: " + exception.getMessage());
+        }
+    }
+
+    private void openInFileManager(Path target) throws IOException {
+        if (Desktop.isDesktopSupported()) {
+            Desktop desktop = Desktop.getDesktop();
+            if (desktop.isSupported(Desktop.Action.BROWSE_FILE_DIR) && Files.isRegularFile(target)) {
+                desktop.browseFileDirectory(target.toFile());
+                return;
+            }
+            if (desktop.isSupported(Desktop.Action.OPEN)) {
+                desktop.open(target.toFile());
+                return;
+            }
+        }
+
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (os.contains("mac")) {
+            new ProcessBuilder("open", target.toAbsolutePath().toString()).start();
+        } else if (os.contains("win")) {
+            new ProcessBuilder("explorer", target.toAbsolutePath().toString()).start();
+        } else {
+            new ProcessBuilder("xdg-open", target.toAbsolutePath().toString()).start();
+        }
+    }
+
+    private Path chooseTrackerRecordsCsv(Stage owner, TextField trackerRecordsDirField) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Choose Past tracker_records.csv");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV Files", "*.csv"));
+        Path initialDir = Path.of(trackerRecordsDirField.getText().trim());
+        if (Files.exists(initialDir)) {
+            chooser.setInitialDirectory(initialDir.toFile());
+        }
+        chooser.setInitialFileName("tracker_records.csv");
+        var selected = chooser.showOpenDialog(owner);
+        return selected == null ? null : selected.toPath();
+    }
+
+    private void showTrackerRecordsCsvDialog(Stage owner, Path csvPath, TextArea logArea) {
+        if (csvPath == null) {
+            appendLog(logArea, "Past tracker records selection cancelled.");
+            return;
+        }
+        try {
+            List<String> lines = Files.readAllLines(csvPath);
+            List<String> records = new ArrayList<>();
+            for (int index = 1; index < lines.size(); index++) {
+                if (lines.get(index).isBlank()) {
+                    continue;
+                }
+                List<String> values = CsvUtils.parseLine(lines.get(index));
+                if (values.size() < 10) {
+                    continue;
+                }
+                records.add(values.get(2) + " [" + shortId(values.get(0)) + "]\n"
+                        + "hash: " + values.get(1) + "\n"
+                        + "size: " + values.get(3) + " bytes, chunks: " + values.get(5) + "\n"
+                        + "encrypted: " + values.get(6) + "\n"
+                        + "updated: " + values.get(7) + "\n"
+                        + "peers: " + values.get(8) + "\n"
+                        + "chunk records: " + values.get(9));
+            }
+
+            Alert alert = new Alert(Alert.AlertType.INFORMATION);
+            alert.initOwner(owner);
+            alert.setTitle("Past Tracker Records");
+            alert.setHeaderText("Loaded " + records.size() + " tracker record(s) from " + csvPath.toAbsolutePath());
+            ListView<String> listView = new ListView<>(FXCollections.observableArrayList(records));
+            listView.setPrefWidth(760);
+            listView.setPrefHeight(420);
+            alert.getDialogPane().setContent(listView);
+            alert.getDialogPane().setMinHeight(480);
+            alert.showAndWait();
+        } catch (IOException exception) {
+            appendLog(logArea, "Could not read tracker_records.csv: " + exception.getMessage());
         }
     }
 
@@ -1224,6 +1304,10 @@ public class MainApp extends Application {
         launch(args);
     }
 
+    private static String shortId(String value) {
+        return value == null ? "" : value.substring(0, Math.min(8, value.length()));
+    }
+
     private static final class SearchResultCell extends ListCell<SearchResult> {
         @Override
         protected void updateItem(SearchResult item, boolean empty) {
@@ -1239,10 +1323,12 @@ public class MainApp extends Application {
             String encryptedSuffix = item.encrypted() ? " • encrypted" : "";
             Label details = new Label(humanReadableSize(item.size()) + " • " + item.chunkCount() + " chunks • " + item.peers().size() + " peer(s)" + encryptedSuffix);
             details.setStyle("-fx-font-size: 12px; -fx-text-fill: #617486;");
+            Label idLabel = new Label("ID: " + shortId(item.fileId()));
+            idLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #35556c;");
             Label actionHint = new Label("Select and click Download, or double-click here.");
             actionHint.setStyle("-fx-font-size: 11px; -fx-text-fill: #1f7a5c;");
 
-            VBox content = new VBox(4, filename, details, actionHint);
+            VBox content = new VBox(4, filename, details, idLabel, actionHint);
             content.setPadding(new Insets(8, 4, 8, 4));
             setGraphic(content);
         }
@@ -1262,11 +1348,13 @@ public class MainApp extends Application {
             filename.setStyle("-fx-font-size: 14px; -fx-font-weight: 800; -fx-text-fill: #12283c;");
             Label details = new Label(item.status() + " • " + item.createdAt());
             details.setStyle("-fx-font-size: 12px; -fx-text-fill: #617486;");
+            Label idLabel = new Label("ID: " + shortId(item.fileId()));
+            idLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #35556c;");
             Label path = new Label(item.destinationPath());
             path.setWrapText(true);
             path.setStyle("-fx-font-size: 11px; -fx-text-fill: #35556c;");
 
-            VBox content = new VBox(4, filename, details, path);
+            VBox content = new VBox(4, filename, details, idLabel, path);
             content.setPadding(new Insets(8, 4, 8, 4));
             setGraphic(content);
         }
@@ -1287,6 +1375,8 @@ public class MainApp extends Application {
             Label details = new Label(humanReadableSize(item.size()) + " • " + item.chunkCount() + " chunks • " +
                     item.peers().size() + " peer(s)" + (item.encrypted() ? " • encrypted" : ""));
             details.setStyle("-fx-font-size: 12px; -fx-text-fill: #617486;");
+            Label idLabel = new Label("ID: " + shortId(item.fileId()));
+            idLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #35556c;");
             Label chunks = new Label(item.chunkRecords().isEmpty()
                     ? "No chunk records"
                     : "Chunk records: " + item.chunkRecords().get(0) +
@@ -1294,7 +1384,7 @@ public class MainApp extends Application {
             chunks.setWrapText(true);
             chunks.setStyle("-fx-font-size: 11px; -fx-text-fill: #35556c;");
 
-            VBox content = new VBox(4, filename, details, chunks);
+            VBox content = new VBox(4, filename, details, idLabel, chunks);
             content.setPadding(new Insets(8, 4, 8, 4));
             setGraphic(content);
         }

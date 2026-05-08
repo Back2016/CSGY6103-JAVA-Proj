@@ -187,7 +187,7 @@ public class PeerNode {
 
     public List<String> getSharedFileNames() {
         return sharedFiles.values().stream()
-                .map(entry -> entry.descriptor().filename())
+                .map(entry -> entry.descriptor().filename() + " [" + shortId(entry.descriptor().fileId()) + "]")
                 .sorted()
                 .toList();
     }
@@ -281,11 +281,11 @@ public class PeerNode {
             }
         } catch (IOException exception) {
             cleanupDownloadArtifacts(workingTarget, destination);
-            clientDatabase.recordDownload(result.filename(), peerSummary, destination.toAbsolutePath().toString(), "FAILED");
+            clientDatabase.recordDownload(result.fileId(), result.filename(), peerSummary, destination.toAbsolutePath().toString(), "FAILED");
             throw exception;
         }
 
-        clientDatabase.recordDownload(result.filename(), peerSummary, destination.toAbsolutePath().toString(), "COMPLETED");
+        clientDatabase.recordDownload(result.fileId(), result.filename(), peerSummary, destination.toAbsolutePath().toString(), "COMPLETED");
         progressCallback.accept(1.0);
         statusCallback.accept("Download complete");
         return destination;
@@ -303,6 +303,10 @@ public class PeerNode {
         List<TrackerRecord> records = trackerClient.listRecords();
         writeTrackerRecordsCsv(records);
         return records;
+    }
+
+    public Path getTrackerRecordsCsvPath() {
+        return sessionDirectory.resolve("tracker_records.csv");
     }
 
     public String describeRemotePeers(SearchResult result) {
@@ -464,10 +468,11 @@ public class PeerNode {
     private void writeTrackerRecordsCsv(List<TrackerRecord> records) throws IOException {
         Path csvPath = sessionDirectory.resolve("tracker_records.csv");
         List<String> lines = new ArrayList<>();
-        lines.add("file_id,filename,size,chunk_size,chunk_count,encrypted,updated_at,peers,chunk_records");
+        lines.add("file_id,content_hash,filename,size,chunk_size,chunk_count,encrypted,updated_at,peers,chunk_records");
         for (TrackerRecord record : records) {
             lines.add(String.join(",",
                     CsvUtils.quote(record.fileId()),
+                    CsvUtils.quote(record.contentHash()),
                     CsvUtils.quote(record.filename()),
                     CsvUtils.quote(String.valueOf(record.size())),
                     CsvUtils.quote(String.valueOf(record.chunkSize())),
@@ -506,10 +511,15 @@ public class PeerNode {
         return value.replaceAll("[^a-zA-Z0-9._-]+", "_");
     }
 
+    private static String shortId(String value) {
+        return value == null ? "" : value.substring(0, Math.min(8, value.length()));
+    }
+
     private SharedFileDescriptor buildDescriptor(String filename, Path servedPath, boolean encrypted) throws IOException {
         long size = Files.size(servedPath);
         int chunkCount = (int) Math.ceil((double) size / AppConfig.DEFAULT_CHUNK_SIZE);
         return new SharedFileDescriptor(
+                UUID.randomUUID().toString(),
                 HashingUtils.sha256(servedPath),
                 filename,
                 size,
@@ -521,9 +531,9 @@ public class PeerNode {
 
     private void verifyDownloadedFileId(SearchResult result, Path downloadedFile) throws IOException {
         String actualFileId = HashingUtils.sha256(downloadedFile);
-        if (!result.fileId().equals(actualFileId)) {
+        if (!result.contentHash().equals(actualFileId)) {
             Files.deleteIfExists(downloadedFile);
-            throw new IOException("Download failed: file content did not match expected fileId for " + result.filename());
+            throw new IOException("Download failed: file content did not match expected content hash for " + result.filename());
         }
     }
 

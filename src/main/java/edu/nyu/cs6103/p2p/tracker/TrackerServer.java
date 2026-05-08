@@ -139,6 +139,7 @@ public class TrackerServer {
     private void handleRegister(DataInputStream input, DataOutputStream output) throws IOException {
         String sessionToken = input.readUTF();
         String fileId = input.readUTF();
+        String contentHash = input.readUTF();
         String filename = input.readUTF();
         long size = input.readLong();
         int chunkSize = input.readInt();
@@ -147,7 +148,7 @@ public class TrackerServer {
 
         try {
             database.registerSharedFile(
-                    new SharedFileDescriptor(fileId, filename, size, chunkSize, chunkCount, encrypted),
+                    new SharedFileDescriptor(fileId, contentHash, filename, size, chunkSize, chunkCount, encrypted),
                     sessionToken
             );
             output.writeBoolean(true);
@@ -179,6 +180,7 @@ public class TrackerServer {
         output.writeInt(results.size());
         for (SearchResult result : results) {
             output.writeUTF(result.fileId());
+            output.writeUTF(result.contentHash());
             output.writeUTF(result.filename());
             output.writeLong(result.size());
             output.writeInt(result.chunkSize());
@@ -200,6 +202,7 @@ public class TrackerServer {
         output.writeInt(records.size());
         for (TrackerRecord record : records) {
             output.writeUTF(record.fileId());
+            output.writeUTF(record.contentHash());
             output.writeUTF(record.filename());
             output.writeLong(record.size());
             output.writeInt(record.chunkSize());
