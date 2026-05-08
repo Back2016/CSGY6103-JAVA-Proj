@@ -474,6 +474,58 @@ Bundle contents:
 - If macOS blocks a `.command` launcher, right-click it and choose `Open`.
 - If you stop the local tracker from the GUI, the app tries to disconnect the current peer first to avoid stale registrations.
 
+### Windows: Other devices cannot connect or download your shared files
+
+If you are on Windows and other devices (e.g. a Mac on the same LAN) can search but cannot download files from you, follow these steps:
+
+**Step 1 — Find your correct LAN IP**
+
+Open PowerShell and run:
+
+```powershell
+ipconfig | findstr "IPv4"
+```
+
+If multiple IPs appear, ask the other device to ping each one from their terminal:
+
+```bash
+ping 10.x.x.x
+```
+
+The IP that gets a response is the one that other devices can reach. Enter that IP into the `Peer Host / LAN IP` field in the app before connecting.
+
+**Step 2 — Allow Java through Windows Firewall**
+
+Windows Firewall may block inbound connections to the peer server even if the firewall appears to be off. Open PowerShell as Administrator and run:
+
+```powershell
+netsh advfirewall firewall add rule name="Java JDK P2P" dir=in action=allow program="C:\Program Files\Java\jdk-24\bin\java.exe" enable=yes
+```
+
+If your JDK version is different, replace `jdk-24` with your actual version. To find the correct path run:
+
+```powershell
+java -XshowSettings:properties -version 2>&1 | Select-String "java.home"
+```
+
+Then replace the path in the command above with the result followed by `\bin\java.exe`.
+
+This rule allows Java to accept inbound connections on any port, so it works regardless of which tracker port or peer port you choose.
+
+**Step 3 — If the above steps do not work, temporarily disable Windows Firewall**
+
+Open PowerShell as Administrator and run:
+
+```powershell
+netsh advfirewall set allprofiles state off
+```
+
+Remember to turn it back on after testing:
+
+```powershell
+netsh advfirewall set allprofiles state on
+```
+
 ## Development Notes
 
 The implementation combines several advanced Java areas in one project:
