@@ -226,17 +226,101 @@ This is the best place to look when a workflow does not behave as expected.
 - `packaging`
   portable launcher assets.
 
-## Advanced Concepts
+## Submission Report
 
-- **Networking** — All communication is built on raw TCP sockets. Peers open socket connections to the tracker for registration, search, and heartbeat commands. Peers also connect directly to each other to serve and fetch file chunks, without routing through the tracker.
+This README is also our written project report. It explains:
 
-- **Multithreading** — File chunks are downloaded in parallel across multiple threads using a fixed thread pool (`ExecutorService`). The tracker server handles each incoming peer connection on a separate thread. The peer server runs an independent thread pool to serve concurrent chunk upload requests from multiple downloaders simultaneously.
+- what the project does
+- how to build and run it
+- how to test the main workflow
+- which advanced topics we used
+- how those advanced topics appear in our implementation
 
-- **Synchronization** — Shared mutable state is protected across threads. All tracker database methods are `synchronized` to prevent concurrent write conflicts. Fields accessed from both the UI thread and background threads use `volatile`. Chunk progress tracking during parallel downloads uses thread-safe coordination to detect completion and errors across worker threads.
+## Advanced Topics Used
 
-- **GUI** — The desktop interface is built with JavaFX. It uses an event-driven model with observable lists, background `Task` objects for non-blocking operations, and live property bindings to reflect download progress and status updates in real time.
+Our project uses more than three advanced topics from the course. The most important ones are listed below.
 
-- **Database** — SQLite is used via JDBC for two separate stores: the tracker database persists peer sessions and shared file metadata, and the client database stores local download history. Both are queried and updated at runtime without requiring an external database server.
+### 1. Networking / Distributed Systems
+
+How we used it:
+
+- We built the whole application around socket-based communication.
+- A central tracker accepts peer registrations, search requests, health checks, and heartbeat updates.
+- Peers download file chunks directly from other peers instead of routing file data through the tracker.
+- This gives the project a real distributed workflow: tracker for metadata, peers for data transfer.
+
+Where it appears:
+
+- `src/main/java/edu/nyu/cs6103/p2p/tracker`
+- `src/main/java/edu/nyu/cs6103/p2p/peer`
+
+### 2. Multithreading / Concurrency
+
+How we used it:
+
+- File downloads are split into chunks and fetched in parallel with an `ExecutorService`.
+- The tracker handles multiple peer connections at the same time.
+- A peer can also serve multiple upload requests concurrently while still remaining responsive in the UI.
+- Background JavaFX tasks are used so the GUI does not freeze during network or file operations.
+
+Where it appears:
+
+- parallel chunk download logic in `PeerNode`
+- tracker request handling in `TrackerServer`
+- peer upload serving in `PeerServer`
+- background UI work in `MainApp`
+
+### 3. Synchronization / Thread Safety
+
+How we used it:
+
+- Tracker-side shared state is protected so concurrent peer requests do not corrupt metadata.
+- Download progress, failure signaling, and chunk completion are coordinated safely across worker threads.
+- UI state and background worker state are separated carefully to avoid race conditions.
+
+Where it appears:
+
+- synchronized tracker database operations in `TrackerDatabase`
+- coordinated download bookkeeping in `PeerNode`
+
+### 4. GUI Programming
+
+How we used it:
+
+- The user-facing desktop client is built with JavaFX.
+- We implemented a multi-panel workflow for tracker connection, file sharing, searching, downloading, tracker records, and download history.
+- The GUI includes progress bars, alerts, file pickers, folder-opening actions, live logs, and CSV viewing dialogs.
+
+Where it appears:
+
+- `src/main/java/edu/nyu/cs6103/p2p/ui/MainApp.java`
+
+### 5. Persistence / Data Storage
+
+How we used it:
+
+- The tracker persists live session and shared-file metadata in SQLite.
+- Each tracker session also exports tracker records and download history into CSV files.
+- This lets users inspect both current runtime state and saved historical session data.
+
+Where it appears:
+
+- SQLite storage in `TrackerDatabase`
+- CSV history/record export in `ClientDatabase` and related helpers
+
+### 6. Security / Cryptography
+
+How we used it:
+
+- We support optional password-protected sharing on a per-file basis.
+- If a user chooses a password while sharing, the project creates an encrypted payload for that file before it is distributed.
+- The tracker stores only metadata about whether a file is encrypted. It does not store the password itself.
+- Download verification also uses SHA-256 hashing to validate the payload before the app accepts the transfer.
+
+Where it appears:
+
+- encrypted sharing flow in `PeerNode`
+- SHA-256 helpers in `HashingUtils`
 
 ## Requirements
 
@@ -279,6 +363,8 @@ Mac / Linux:
 ```
 
 ## How To Run
+
+This is the recommended end-to-end workflow for graders, teammates, or anyone testing the project for the first time.
 
 ### Start the tracker from the terminal
 
@@ -339,6 +425,52 @@ Example peer ports on one machine:
 - `6060`
 - `6061`
 - `6062`
+
+## Quick Run Instructions
+
+If you want the shortest possible run guide, use this:
+
+1. Open a terminal in the project root.
+2. Start the tracker.
+3. Launch the GUI client.
+4. Launch a second GUI client if you want to test peer-to-peer transfer.
+5. Connect both peers to the same tracker.
+6. Share a file from one peer.
+7. Search and download that file from the other peer.
+
+Example on macOS / Linux:
+
+Terminal 1:
+```bash
+./mvnw exec:java -Dexec.mainClass=edu.nyu.cs6103.p2p.tracker.TrackerServerMain
+```
+
+Terminal 2:
+```bash
+./mvnw javafx:run
+```
+
+Terminal 3:
+```bash
+./mvnw javafx:run
+```
+
+Example on Windows:
+
+Terminal 1:
+```powershell
+.\mvnw.cmd exec:java -Dexec.mainClass=edu.nyu.cs6103.p2p.tracker.TrackerServerMain
+```
+
+Terminal 2:
+```powershell
+.\mvnw.cmd javafx:run
+```
+
+Terminal 3:
+```powershell
+.\mvnw.cmd javafx:run
+```
 
 ## Typical Demo Flow
 
@@ -447,6 +579,31 @@ Mac / Linux:
 ./mvnw test
 ```
 
+## Advanced Topics Summary For Course Requirements
+
+To clearly satisfy the project requirement of using three or more advanced topics, our project uses all of the following:
+
+1. Networking
+   The tracker and peers communicate through TCP sockets, and peers download chunks directly from each other.
+2. Multithreading
+   Chunk downloads and server-side request handling run concurrently using Java thread pools.
+3. Synchronization
+   Shared metadata and multi-threaded download state are coordinated safely across concurrent workers.
+4. GUI programming
+   The application provides a full JavaFX desktop interface instead of a command-line-only experience.
+5. Persistence
+   The system uses SQLite and CSV exports to preserve tracker metadata and session history.
+6. Cryptography
+   Files can be shared with per-file password protection, and payloads are verified using SHA-256 hashes.
+
+If a grader only wants to check three, the clearest three are:
+
+- Networking
+- Multithreading
+- GUI programming
+
+But the full implementation goes beyond that minimum.
+
 ## Packaging
 
 Build the macOS portable distribution:
@@ -528,13 +685,13 @@ netsh advfirewall set allprofiles state on
 
 ## Development Notes
 
-The implementation combines several advanced Java areas in one project:
+We built this project as a student team and tried to keep the system modular enough that each part could be implemented and tested independently.
 
-- JavaFX event-driven UI
-- sockets for tracker-peer and peer-peer communication
-- concurrency for parallel chunk downloading and chunk serving
-- SQLite persistence for tracker metadata
-- CSV exports for per-session records
-- optional cryptography for per-file password protection
+Our development approach was:
 
-The code is split so that tracker logic, peer logic, UI logic, and storage helpers stay separate and easier to maintain.
+- separate tracker logic, peer logic, UI logic, models, and storage helpers
+- add integration tests for real peer/tracker workflows instead of only unit-level checks
+- keep the GUI practical enough for live demos and manual testing
+- add session-based CSV exports so we could inspect and debug behavior across multiple test runs
+
+In short, this project combines distributed networking, concurrent programming, GUI design, persistence, and security-related features in one end-to-end Java application.
