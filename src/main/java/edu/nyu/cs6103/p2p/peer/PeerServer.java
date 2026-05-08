@@ -1,6 +1,7 @@
 package edu.nyu.cs6103.p2p.peer;
 
 import edu.nyu.cs6103.p2p.common.AppConfig;
+import edu.nyu.cs6103.p2p.common.ProtocolCommands;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -71,11 +72,11 @@ public class PeerServer {
     private void handleClient(Socket socket) {
         try (socket;
              DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()))) {
+            DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()))) {
             String command = input.readUTF();
             switch (command) {
-                case "MANIFEST" -> handleManifest(input, output);
-                case "CHUNK" -> handleChunk(input, output);
+                case ProtocolCommands.MANIFEST -> handleManifest(input, output);
+                case ProtocolCommands.CHUNK -> handleChunk(input, output);
                 default -> {
                     output.writeBoolean(false);
                     output.writeUTF("Unsupported peer command: " + command);
@@ -88,11 +89,11 @@ public class PeerServer {
     }
 
     private void handleManifest(DataInputStream input, DataOutputStream output) throws IOException {
-        String filename = input.readUTF();
-        Path path = peerNode.getSharedFile(filename);
+        String fileId = input.readUTF();
+        Path path = peerNode.getSharedFile(fileId);
         if (path == null || !Files.exists(path)) {
             output.writeBoolean(false);
-            output.writeUTF("File not found: " + filename);
+            output.writeUTF("File not found for fileId: " + fileId);
             output.flush();
             return;
         }
@@ -107,18 +108,33 @@ public class PeerServer {
     }
 
     private void handleChunk(DataInputStream input, DataOutputStream output) throws IOException {
-        String filename = input.readUTF();
+        String fileId = input.readUTF();
         int chunkIndex = input.readInt();
-        Path path = peerNode.getSharedFile(filename);
+        Path path = peerNode.getSharedFile(fileId);
         if (path == null || !Files.exists(path)) {
             output.writeBoolean(false);
-            output.writeUTF("File not found: " + filename);
+            output.writeUTF("File not found for fileId: " + fileId);
+            output.flush();
+            return;
+        }
+
+        if (chunkIndex < 0) {
+            output.writeBoolean(false);
+            output.writeUTF("Chunk index cannot be negative");
             output.flush();
             return;
         }
 
         long offset = (long) chunkIndex * AppConfig.DEFAULT_CHUNK_SIZE;
         long fileSize = Files.size(path);
+        int chunkCount = (int) Math.ceil((double) fileSize / AppConfig.DEFAULT_CHUNK_SIZE);
+        if (chunkIndex >= chunkCount || offset >= fileSize) {
+            output.writeBoolean(false);
+            output.writeUTF("Chunk index out of range");
+            output.flush();
+            return;
+        }
+
         int length = (int) Math.min(AppConfig.DEFAULT_CHUNK_SIZE, fileSize - offset);
         if (length <= 0) {
             output.writeBoolean(false);

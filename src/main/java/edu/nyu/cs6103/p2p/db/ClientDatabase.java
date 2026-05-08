@@ -1,5 +1,6 @@
 package edu.nyu.cs6103.p2p.db;
 
+import edu.nyu.cs6103.p2p.common.CsvUtils;
 import edu.nyu.cs6103.p2p.model.DownloadHistoryEntry;
 
 import java.io.BufferedWriter;
@@ -36,11 +37,11 @@ public class ClientDatabase {
     public synchronized void recordDownload(String filename, String sourcePeers, String destinationPath, String status) {
         String createdAt = LocalDateTime.now().toString();
         String row = String.join(",",
-                escape(createdAt),
-                escape(filename),
-                escape(sourcePeers),
-                escape(destinationPath),
-                escape(status));
+                CsvUtils.quote(createdAt),
+                CsvUtils.quote(filename),
+                CsvUtils.quote(sourcePeers),
+                CsvUtils.quote(destinationPath),
+                CsvUtils.quote(status));
         try (BufferedWriter writer = Files.newBufferedWriter(csvPath, StandardOpenOption.APPEND)) {
             writer.write(row);
             writer.newLine();
@@ -61,7 +62,7 @@ public class ClientDatabase {
                 if (line.isBlank()) {
                     continue;
                 }
-                List<String> values = parseCsvLine(line);
+                List<String> values = CsvUtils.parseLine(line);
                 if (values.size() < 5) {
                     continue;
                 }
@@ -80,32 +81,4 @@ public class ClientDatabase {
         }
     }
 
-    private String escape(String value) {
-        String normalized = value == null ? "" : value;
-        return "\"" + normalized.replace("\"", "\"\"") + "\"";
-    }
-
-    private List<String> parseCsvLine(String line) {
-        List<String> values = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        boolean inQuotes = false;
-        for (int index = 0; index < line.length(); index++) {
-            char ch = line.charAt(index);
-            if (ch == '"') {
-                if (inQuotes && index + 1 < line.length() && line.charAt(index + 1) == '"') {
-                    current.append('"');
-                    index++;
-                } else {
-                    inQuotes = !inQuotes;
-                }
-            } else if (ch == ',' && !inQuotes) {
-                values.add(current.toString());
-                current.setLength(0);
-            } else {
-                current.append(ch);
-            }
-        }
-        values.add(current.toString());
-        return values;
-    }
 }

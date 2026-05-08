@@ -1,11 +1,17 @@
 package edu.nyu.cs6103.p2p.peer;
 
 import edu.nyu.cs6103.p2p.common.AppConfig;
+import edu.nyu.cs6103.p2p.common.CsvUtils;
+import edu.nyu.cs6103.p2p.common.HashingUtils;
+import edu.nyu.cs6103.p2p.common.ProtocolCommands;
+import edu.nyu.cs6103.p2p.common.ThrowableUtils;
 import edu.nyu.cs6103.p2p.db.ClientDatabase;
 import edu.nyu.cs6103.p2p.model.DownloadHistoryEntry;
 import edu.nyu.cs6103.p2p.model.PeerInfo;
 import edu.nyu.cs6103.p2p.model.SearchResult;
+import edu.nyu.cs6103.p2p.model.SharedFileDescriptor;
 import edu.nyu.cs6103.p2p.model.TrackerRecord;
+import edu.nyu.cs6103.p2p.tracker.TrackerClient;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -41,6 +47,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
@@ -73,8 +81,11 @@ public class PeerNode {
     private final Path encryptedFilesDirectory;
     private final Path downloadsDirectory;
     private final ClientDatabase clientDatabase;
+    private final TrackerClient trackerClient;
     private final Map<String, SharedFileEntry> sharedFiles = new ConcurrentHashMap<>();
     private final PeerServer peerServer;
+    private volatile String peerSessionToken;
+    private volatile ScheduledExecutorService heartbeatExecutor;
 
     public PeerNode(String peerId,
                     String trackerHost,
@@ -108,11 +119,12 @@ public class PeerNode {
         this.peerId = peerId;
         this.trackerHost = trackerHost;
         this.trackerPort = trackerPort;
-        this.trackerSessionId = trackerSessionId;
         this.peerPort = peerPort;
         this.advertisedHost = advertisedHost;
         this.trackerRecordsDirectory = trackerRecordsDirectory;
         this.downloadsDirectory = downloadsDirectory;
+        this.trackerClient = new TrackerClient(trackerHost, trackerPort);
+        this.trackerSessionId = trackerSessionId;
         String sessionSlug = sanitizeForPath(trackerHost + "_" + trackerPort + "_" + trackerSessionId);
         this.sessionDirectory = trackerRecordsDirectory.resolve(sessionSlug);
         this.encryptedFilesDirectory = sessionDirectory.resolve("shared_encrypted");
@@ -124,11 +136,20 @@ public class PeerNode {
         this.peerServer = new PeerServer(peerPort, this);
     }
 
-    public void startServer() {
+    public synchronized void startServer() throws IOException {
         peerServer.start();
+        try {
+            peerSessionToken = openPeerSession();
+            startHeartbeatLoop();
+        } catch (IOException exception) {
+            stopServer();
+            throw exception;
+        }
     }
 
-    public void stopServer() {
+    public synchronized void stopServer() {
+        stopHeartbeatLoop();
+        peerSessionToken = null;
         peerServer.stop();
     }
 
@@ -142,57 +163,42 @@ public class PeerNode {
         }
 
         String normalizedPassword = password == null ? "" : password.trim();
-        SharedFileEntry entry;
-        if (normalizedPassword.isEmpty()) {
-            entry = new SharedFileEntry(filePath.getFileName().toString(), filePath, filePath.toAbsolutePath().toString(), false);
-        } else {
-            Path encryptedCopy = buildEncryptedCopy(filePath, normalizedPassword);
-            entry = new SharedFileEntry(filePath.getFileName().toString(), encryptedCopy, filePath.toAbsolutePath().toString(), true);
-        }
+        Path servedPath = filePath;
+        boolean encrypted = false;
+        Path temporaryEncryptedCopy = null;
+        try {
+            if (!normalizedPassword.isEmpty()) {
+                servedPath = buildEncryptedCopy(filePath, normalizedPassword);
+                temporaryEncryptedCopy = servedPath;
+                encrypted = true;
+            }
 
-        sharedFiles.put(entry.displayName(), entry);
-        registerFileWithTracker(entry);
+            SharedFileDescriptor descriptor = buildDescriptor(filePath.getFileName().toString(), servedPath, encrypted);
+            SharedFileEntry entry = new SharedFileEntry(descriptor, servedPath);
+            registerFileWithTracker(entry);
+            sharedFiles.put(descriptor.fileId(), entry);
+        } catch (IOException exception) {
+            if (temporaryEncryptedCopy != null) {
+                Files.deleteIfExists(temporaryEncryptedCopy);
+            }
+            throw exception;
+        }
     }
 
     public List<String> getSharedFileNames() {
-        return sharedFiles.keySet().stream().sorted().toList();
+        return sharedFiles.values().stream()
+                .map(entry -> entry.descriptor().filename())
+                .sorted()
+                .toList();
     }
 
-    public Path getSharedFile(String filename) {
-        SharedFileEntry entry = sharedFiles.get(filename);
+    public Path getSharedFile(String fileId) {
+        SharedFileEntry entry = sharedFiles.get(fileId);
         return entry == null ? null : entry.servedPath();
     }
 
     public List<SearchResult> search(String query) throws IOException {
-        try (Socket socket = new Socket(trackerHost, trackerPort);
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("SEARCH");
-            output.writeUTF(query);
-            output.flush();
-
-            boolean success = input.readBoolean();
-            if (!success) {
-                throw new IOException(input.readUTF());
-            }
-
-            int resultCount = input.readInt();
-            List<SearchResult> results = new ArrayList<>();
-            for (int i = 0; i < resultCount; i++) {
-                String filename = input.readUTF();
-                long size = input.readLong();
-                int chunkSize = input.readInt();
-                int chunkCount = input.readInt();
-                boolean encrypted = input.readBoolean();
-                int peerCount = input.readInt();
-                List<PeerInfo> peers = new ArrayList<>();
-                for (int peerIndex = 0; peerIndex < peerCount; peerIndex++) {
-                    peers.add(new PeerInfo(input.readUTF(), input.readUTF(), input.readInt()));
-                }
-                results.add(new SearchResult(filename, size, chunkSize, chunkCount, encrypted, peers));
-            }
-            return results;
-        }
+        return trackerClient.search(query);
     }
 
     public Path download(SearchResult result, DoubleConsumer progressCallback, Consumer<String> statusCallback) throws IOException {
@@ -213,62 +219,70 @@ public class PeerNode {
         Files.createDirectories(downloadsDirectory);
         String peerSummary = candidatePeers.stream().map(PeerInfo::toString).reduce((a, b) -> a + ", " + b).orElse("none");
 
-        statusCallback.accept("Preparing " + result.chunkCount() + " chunk(s)");
-        try (FileChannel channel = FileChannel.open(workingTarget,
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE)) {
-            channel.truncate(result.size());
-            AtomicInteger completedChunks = new AtomicInteger();
-            ExecutorService executor = Executors.newFixedThreadPool(Math.min(AppConfig.DOWNLOAD_THREADS, result.chunkCount()));
-            try {
-                List<Future<?>> futures = new ArrayList<>();
-                for (int chunkIndex = 0; chunkIndex < result.chunkCount(); chunkIndex++) {
-                    final int currentChunk = chunkIndex;
-                    futures.add(executor.submit(() -> {
-                        byte[] bytes = fetchChunkWithRetry(result, currentChunk, candidatePeers);
-                        try {
-                            channel.write(ByteBuffer.wrap(bytes), (long) currentChunk * result.chunkSize());
-                        } catch (IOException exception) {
-                            throw new IllegalStateException("Failed to write chunk " + currentChunk, exception);
+        try {
+            if (result.chunkCount() == 0) {
+                Files.write(workingTarget, new byte[0], StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            } else {
+                statusCallback.accept("Preparing " + result.chunkCount() + " chunk(s)");
+                try (FileChannel channel = FileChannel.open(workingTarget,
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE)) {
+                    channel.truncate(result.size());
+                    AtomicInteger completedChunks = new AtomicInteger();
+                    ExecutorService executor = Executors.newFixedThreadPool(Math.min(AppConfig.DOWNLOAD_THREADS, result.chunkCount()));
+                    try {
+                        List<Future<?>> futures = new ArrayList<>();
+                        for (int chunkIndex = 0; chunkIndex < result.chunkCount(); chunkIndex++) {
+                            final int currentChunk = chunkIndex;
+                            futures.add(executor.submit(() -> {
+                                byte[] bytes = fetchChunkWithRetry(result, currentChunk, candidatePeers);
+                                try {
+                                    channel.write(ByteBuffer.wrap(bytes), (long) currentChunk * result.chunkSize());
+                                } catch (IOException exception) {
+                                    throw new IllegalStateException("Failed to write chunk " + currentChunk, exception);
+                                }
+                                int done = completedChunks.incrementAndGet();
+                                progressCallback.accept(done / (double) result.chunkCount());
+                                statusCallback.accept("Downloaded chunk " + done + " of " + result.chunkCount());
+                            }));
                         }
-                        int done = completedChunks.incrementAndGet();
-                        progressCallback.accept(done / (double) result.chunkCount());
-                        statusCallback.accept("Downloaded chunk " + done + " of " + result.chunkCount());
-                    }));
+
+                        for (Future<?> future : futures) {
+                            future.get();
+                        }
+                    } catch (InterruptedException exception) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("Download interrupted", exception);
+                    } catch (ExecutionException exception) {
+                        throw new IOException("Download failed: " + exception.getCause().getMessage(), exception.getCause());
+                    } finally {
+                        executor.shutdownNow();
+                    }
+                }
+            }
+
+            verifyDownloadedFileId(result, workingTarget);
+
+            if (result.encrypted()) {
+                if (normalizedPassword.isBlank()) {
+                    Files.deleteIfExists(workingTarget);
+                    throw new IOException("Download failed: this file is encrypted and requires a password");
                 }
 
-                for (Future<?> future : futures) {
-                    future.get();
+                try {
+                    decryptFile(workingTarget, destination, normalizedPassword);
+                    Files.deleteIfExists(workingTarget);
+                } catch (IOException exception) {
+                    Files.deleteIfExists(workingTarget);
+                    Files.deleteIfExists(destination);
+                    throw new IOException("Download failed: unable to decrypt file with the provided password", exception);
                 }
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Download interrupted", exception);
-            } catch (ExecutionException exception) {
-                Files.deleteIfExists(workingTarget);
-                clientDatabase.recordDownload(result.filename(), peerSummary, destination.toAbsolutePath().toString(), "FAILED");
-                throw new IOException("Download failed: " + exception.getCause().getMessage(), exception.getCause());
-            } finally {
-                executor.shutdownNow();
             }
-        }
-
-        if (result.encrypted()) {
-            if (normalizedPassword.isBlank()) {
-                Files.deleteIfExists(workingTarget);
-                clientDatabase.recordDownload(result.filename(), peerSummary, destination.toAbsolutePath().toString(), "FAILED");
-                throw new IOException("Download failed: this file is encrypted and requires a password");
-            }
-
-            try {
-                decryptFile(workingTarget, destination, normalizedPassword);
-                Files.deleteIfExists(workingTarget);
-            } catch (IOException exception) {
-                Files.deleteIfExists(workingTarget);
-                Files.deleteIfExists(destination);
-                clientDatabase.recordDownload(result.filename(), peerSummary, destination.toAbsolutePath().toString(), "FAILED");
-                throw new IOException("Download failed: unable to decrypt file with the provided password", exception);
-            }
+        } catch (IOException exception) {
+            cleanupDownloadArtifacts(workingTarget, destination);
+            clientDatabase.recordDownload(result.filename(), peerSummary, destination.toAbsolutePath().toString(), "FAILED");
+            throw exception;
         }
 
         clientDatabase.recordDownload(result.filename(), peerSummary, destination.toAbsolutePath().toString(), "COMPLETED");
@@ -282,46 +296,9 @@ public class PeerNode {
     }
 
     public List<TrackerRecord> fetchTrackerRecords() throws IOException {
-        try (Socket socket = new Socket(trackerHost, trackerPort);
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("LIST_RECORDS");
-            output.flush();
-
-            boolean success = input.readBoolean();
-            if (!success) {
-                throw new IOException(input.readUTF());
-            }
-
-            int recordCount = input.readInt();
-            List<TrackerRecord> records = new ArrayList<>();
-            for (int index = 0; index < recordCount; index++) {
-                String filename = input.readUTF();
-                long size = input.readLong();
-                String originalPath = input.readUTF();
-                int chunkSize = input.readInt();
-                int chunkCount = input.readInt();
-                boolean encrypted = input.readBoolean();
-                String updatedAt = input.readUTF();
-                int peerCount = input.readInt();
-                List<PeerInfo> peers = new ArrayList<>();
-                for (int peerIndex = 0; peerIndex < peerCount; peerIndex++) {
-                    peers.add(new PeerInfo(input.readUTF(), input.readUTF(), input.readInt()));
-                }
-                int chunkRecordCount = input.readInt();
-                List<edu.nyu.cs6103.p2p.model.ChunkRecord> chunkRecords = new ArrayList<>();
-                for (int chunkIndex = 0; chunkIndex < chunkRecordCount; chunkIndex++) {
-                    chunkRecords.add(new edu.nyu.cs6103.p2p.model.ChunkRecord(
-                            input.readInt(),
-                            input.readLong(),
-                            input.readInt()
-                    ));
-                }
-                records.add(new TrackerRecord(filename, size, originalPath, chunkSize, chunkCount, encrypted, updatedAt, peers, chunkRecords));
-            }
-            writeTrackerRecordsCsv(records);
-            return records;
-        }
+        List<TrackerRecord> records = trackerClient.listRecords();
+        writeTrackerRecordsCsv(records);
+        return records;
     }
 
     public String describeRemotePeers(SearchResult result) {
@@ -333,25 +310,19 @@ public class PeerNode {
     }
 
     public void unregisterFromTracker() throws IOException {
-        try (Socket socket = new Socket(trackerHost, trackerPort);
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("UNREGISTER_PEER");
-            output.writeUTF(peerId);
-            output.flush();
-
-            boolean success = input.readBoolean();
-            if (!success) {
-                throw new IOException(input.readUTF());
-            }
-            input.readUTF();
+        String sessionToken = peerSessionToken;
+        if (sessionToken == null) {
+            clearSharedFiles();
+            return;
         }
+        trackerClient.disconnect(sessionToken);
+        peerSessionToken = null;
         clearSharedFiles();
     }
 
     public void clearSharedFiles() {
         for (SharedFileEntry entry : sharedFiles.values()) {
-            if (entry.encrypted()) {
+            if (entry.descriptor().encrypted()) {
                 try {
                     Files.deleteIfExists(entry.servedPath());
                 } catch (IOException ignored) {
@@ -362,29 +333,11 @@ public class PeerNode {
     }
 
     private void registerFileWithTracker(SharedFileEntry entry) throws IOException {
-        long size = Files.size(entry.servedPath());
-        int chunkCount = (int) Math.ceil((double) size / AppConfig.DEFAULT_CHUNK_SIZE);
-        try (Socket socket = new Socket(trackerHost, trackerPort);
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("REGISTER");
-            output.writeUTF(peerId);
-            output.writeUTF(advertisedHost);
-            output.writeInt(peerPort);
-            output.writeUTF(entry.displayName());
-            output.writeLong(size);
-            output.writeInt(AppConfig.DEFAULT_CHUNK_SIZE);
-            output.writeInt(chunkCount);
-            output.writeUTF(entry.originalPath());
-            output.writeBoolean(entry.encrypted());
-            output.flush();
-
-            boolean success = input.readBoolean();
-            if (!success) {
-                throw new IOException(input.readUTF());
-            }
-            input.readUTF();
+        String sessionToken = peerSessionToken;
+        if (sessionToken == null) {
+            throw new IOException("Peer session is not established");
         }
+        trackerClient.register(sessionToken, entry.descriptor());
     }
 
     public static String suggestAdvertisedHost() throws IOException {
@@ -408,8 +361,12 @@ public class PeerNode {
     }
 
     private Path buildEncryptedCopy(Path originalFile, String password) throws IOException {
-        String safeName = originalFile.getFileName().toString() + ".p2penc";
-        Path encryptedTarget = encryptedFilesDirectory.resolve(safeName);
+        String fileName = originalFile.getFileName().toString();
+        String tempPrefix = sanitizeForPath(fileName);
+        if (tempPrefix.length() < 3) {
+            tempPrefix = (tempPrefix + "enc").substring(0, 3);
+        }
+        Path encryptedTarget = Files.createTempFile(encryptedFilesDirectory, tempPrefix + "-", ".p2penc");
         encryptFile(originalFile, encryptedTarget, password);
         return encryptedTarget;
     }
@@ -443,21 +400,21 @@ public class PeerNode {
         for (int attempt = 0; attempt < orderedPeers.size(); attempt++) {
             PeerInfo peer = orderedPeers.get((startIndex + attempt) % orderedPeers.size());
             try {
-                return fetchChunk(peer, result.filename(), chunkIndex);
+                return fetchChunk(peer, result, chunkIndex);
             } catch (IOException exception) {
                 lastException = exception;
                 if (attempt == orderedPeers.size() - 1) {
                     throw new IllegalStateException("Unable to fetch chunk " + chunkIndex + " from peers " +
                             orderedPeers.stream().map(PeerInfo::toString).reduce((a, b) -> a + ", " + b).orElse("none") +
-                            ". Last error: " + rootCauseMessage(exception), exception);
+                            ". Last error: " + ThrowableUtils.rootCauseMessage(exception), exception);
                 }
             }
         }
         throw new IllegalStateException("No peers available for chunk " + chunkIndex +
-                (lastException == null ? "" : ". Last error: " + rootCauseMessage(lastException)));
+                (lastException == null ? "" : ". Last error: " + ThrowableUtils.rootCauseMessage(lastException)));
     }
 
-    private byte[] fetchChunk(PeerInfo peer, String filename, int chunkIndex) throws IOException {
+    private byte[] fetchChunk(PeerInfo peer, SearchResult result, int chunkIndex) throws IOException {
         try (Socket socket = new Socket()) {
             SocketAddress socketAddress = new InetSocketAddress(peer.host(), peer.port());
             socket.connect(socketAddress, SOCKET_CONNECT_TIMEOUT_MS);
@@ -465,25 +422,33 @@ public class PeerNode {
 
             try (DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
                  DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("CHUNK");
-            output.writeUTF(filename);
-            output.writeInt(chunkIndex);
-            output.flush();
+                output.writeUTF(ProtocolCommands.CHUNK);
+                output.writeUTF(result.fileId());
+                output.writeInt(chunkIndex);
+                output.flush();
 
-            boolean success = input.readBoolean();
-            if (!success) {
-                throw new IOException(input.readUTF());
-            }
+                boolean success = input.readBoolean();
+                if (!success) {
+                    throw new IOException(input.readUTF());
+                }
 
-            int returnedChunkIndex = input.readInt();
-            int length = input.readInt();
-            if (returnedChunkIndex != chunkIndex) {
-                throw new IOException("Chunk mismatch for " + filename + ": expected " + chunkIndex + " but received " + returnedChunkIndex);
-            }
+                int returnedChunkIndex = input.readInt();
+                int length = input.readInt();
+                if (returnedChunkIndex != chunkIndex) {
+                    throw new IOException("Chunk mismatch for " + result.filename() + ": expected " + chunkIndex + " but received " + returnedChunkIndex);
+                }
+                int expectedChunkLength = expectedChunkLength(result, chunkIndex);
+                if (expectedChunkLength <= 0) {
+                    throw new IOException("Chunk index out of range for " + result.filename() + ": " + chunkIndex);
+                }
+                if (length <= 0 || length > expectedChunkLength) {
+                    throw new IOException("Invalid chunk length for " + result.filename() + ": expected 1.." +
+                            expectedChunkLength + " but received " + length);
+                }
 
-            byte[] buffer = new byte[length];
-            input.readFully(buffer);
-            return buffer;
+                byte[] buffer = new byte[length];
+                input.readFully(buffer);
+                return buffer;
             }
         }
     }
@@ -495,44 +460,102 @@ public class PeerNode {
     private void writeTrackerRecordsCsv(List<TrackerRecord> records) throws IOException {
         Path csvPath = sessionDirectory.resolve("tracker_records.csv");
         List<String> lines = new ArrayList<>();
-        lines.add("filename,size,original_path,chunk_size,chunk_count,encrypted,updated_at,peers,chunk_records");
+        lines.add("file_id,filename,size,chunk_size,chunk_count,encrypted,updated_at,peers,chunk_records");
         for (TrackerRecord record : records) {
             lines.add(String.join(",",
-                    csv(record.filename()),
-                    csv(String.valueOf(record.size())),
-                    csv(record.originalPath()),
-                    csv(String.valueOf(record.chunkSize())),
-                    csv(String.valueOf(record.chunkCount())),
-                    csv(String.valueOf(record.encrypted())),
-                    csv(record.updatedAt()),
-                    csv(record.peers().stream().map(PeerInfo::toString).reduce((a, b) -> a + " | " + b).orElse("")),
-                    csv(record.chunkRecords().stream().map(Object::toString).reduce((a, b) -> a + " | " + b).orElse(""))
+                    CsvUtils.quote(record.fileId()),
+                    CsvUtils.quote(record.filename()),
+                    CsvUtils.quote(String.valueOf(record.size())),
+                    CsvUtils.quote(String.valueOf(record.chunkSize())),
+                    CsvUtils.quote(String.valueOf(record.chunkCount())),
+                    CsvUtils.quote(String.valueOf(record.encrypted())),
+                    CsvUtils.quote(record.updatedAt()),
+                    CsvUtils.quote(record.peers().stream().map(PeerInfo::toString).reduce((a, b) -> a + " | " + b).orElse("")),
+                    CsvUtils.quote(record.chunkRecords().stream().map(Object::toString).reduce((a, b) -> a + " | " + b).orElse(""))
             ));
         }
         Files.write(csvPath, lines, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
     }
 
-    private static String csv(String value) {
-        String normalized = value == null ? "" : value;
-        return "\"" + normalized.replace("\"", "\"\"") + "\"";
+    private static String resolveTrackerSessionId(String host, int port) throws IOException {
+        return new TrackerClient(host, port).ping();
     }
 
-    private static String resolveTrackerSessionId(String host, int port) throws IOException {
-        try (Socket socket = new Socket(host, port);
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("PING");
-            output.flush();
-            boolean success = input.readBoolean();
-            if (!success || !"PONG".equals(input.readUTF())) {
-                throw new IOException("Tracker did not return a healthy session handshake");
-            }
-            return input.readUTF();
+    private static int expectedChunkLength(SearchResult result, int chunkIndex) {
+        long chunkOffset = (long) chunkIndex * result.chunkSize();
+        long remaining = result.size() - chunkOffset;
+        return (int) Math.min(result.chunkSize(), Math.max(0L, remaining));
+    }
+
+    private static void cleanupDownloadArtifacts(Path workingTarget, Path destination) {
+        try {
+            Files.deleteIfExists(workingTarget);
+        } catch (IOException ignored) {
+        }
+        try {
+            Files.deleteIfExists(destination);
+        } catch (IOException ignored) {
         }
     }
 
     private static String sanitizeForPath(String value) {
         return value.replaceAll("[^a-zA-Z0-9._-]+", "_");
+    }
+
+    private SharedFileDescriptor buildDescriptor(String filename, Path servedPath, boolean encrypted) throws IOException {
+        long size = Files.size(servedPath);
+        int chunkCount = (int) Math.ceil((double) size / AppConfig.DEFAULT_CHUNK_SIZE);
+        return new SharedFileDescriptor(
+                HashingUtils.sha256(servedPath),
+                filename,
+                size,
+                AppConfig.DEFAULT_CHUNK_SIZE,
+                chunkCount,
+                encrypted
+        );
+    }
+
+    private void verifyDownloadedFileId(SearchResult result, Path downloadedFile) throws IOException {
+        String actualFileId = HashingUtils.sha256(downloadedFile);
+        if (!result.fileId().equals(actualFileId)) {
+            Files.deleteIfExists(downloadedFile);
+            throw new IOException("Download failed: file content did not match expected fileId for " + result.filename());
+        }
+    }
+
+    private String openPeerSession() throws IOException {
+        return trackerClient.hello(peerId, advertisedHost, peerPort);
+    }
+
+    private void startHeartbeatLoop() {
+        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "peer-heartbeat-" + peerPort);
+            thread.setDaemon(true);
+            return thread;
+        });
+        executor.scheduleAtFixedRate(() -> {
+            try {
+                sendHeartbeat();
+            } catch (IOException ignored) {
+            }
+        }, AppConfig.HEARTBEAT_INTERVAL_MS, AppConfig.HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        heartbeatExecutor = executor;
+    }
+
+    private void stopHeartbeatLoop() {
+        ScheduledExecutorService executor = heartbeatExecutor;
+        if (executor != null) {
+            executor.shutdownNow();
+            heartbeatExecutor = null;
+        }
+    }
+
+    private void sendHeartbeat() throws IOException {
+        String sessionToken = peerSessionToken;
+        if (sessionToken == null) {
+            return;
+        }
+        trackerClient.heartbeat(sessionToken);
     }
 
     private void encryptFile(Path inputFile, Path outputFile, String password) throws IOException {
@@ -586,14 +609,6 @@ public class PeerNode {
         return cipher;
     }
 
-    private static String rootCauseMessage(Throwable throwable) {
-        Throwable cursor = throwable;
-        while (cursor.getCause() != null) {
-            cursor = cursor.getCause();
-        }
-        return cursor.getMessage() == null ? cursor.getClass().getSimpleName() : cursor.getMessage();
-    }
-
-    private record SharedFileEntry(String displayName, Path servedPath, String originalPath, boolean encrypted) {
+    private record SharedFileEntry(SharedFileDescriptor descriptor, Path servedPath) {
     }
 }

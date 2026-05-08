@@ -1,12 +1,14 @@
 package edu.nyu.cs6103.p2p.ui;
 
 import edu.nyu.cs6103.p2p.common.AppConfig;
+import edu.nyu.cs6103.p2p.common.ThrowableUtils;
 import edu.nyu.cs6103.p2p.db.TrackerDatabase;
 import edu.nyu.cs6103.p2p.model.DownloadHistoryEntry;
 import edu.nyu.cs6103.p2p.model.SearchResult;
 import edu.nyu.cs6103.p2p.model.TrackerRecord;
 import edu.nyu.cs6103.p2p.peer.PeerNode;
 import edu.nyu.cs6103.p2p.tracker.TrackerServer;
+import edu.nyu.cs6103.p2p.tracker.TrackerClient;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
@@ -35,13 +37,8 @@ import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.awt.Desktop;
 import java.io.IOException;
-import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.DecimalFormat;
@@ -64,6 +61,7 @@ public class MainApp extends Application {
     private Thread localTrackerThread;
     private volatile boolean localTrackerRunning;
     private volatile boolean trackerConnected;
+    private volatile boolean transferBusy;
 
     @Override
     public void start(Stage stage) {
@@ -87,9 +85,9 @@ public class MainApp extends Application {
         Button shareFileButton = primaryButton("Share a File");
         Button searchButton = primaryButton("Search");
         Button downloadButton = primaryButton("Download Selected");
-        Button refreshHistoryButton = secondaryButton("Refresh History");
+        Button refreshHistoryButton = secondaryButton("Refresh");
         Button refreshTrackerRecordsButton = secondaryButton("Refresh Records");
-        Button openDownloadPathButton = secondaryButton("Open Download Folder");
+        Button openDownloadPathButton = secondaryButton("Open Folder");
 
         shareFileButton.setDisable(true);
         searchButton.setDisable(true);
@@ -240,40 +238,56 @@ public class MainApp extends Application {
                 statusLabel.setText("No local tracker is running");
                 return;
             }
-            if (trackerConnected && isCurrentTrackerLocal(trackerHostField.getText().trim(), peerHostField.getText().trim())) {
-                disconnectTrackerButton.fire();
+            String warning = null;
+            if (trackerConnected && peerNode != null && isCurrentTrackerLocal(trackerHostField.getText().trim(), peerHostField.getText().trim())) {
+                try {
+                    peerNode.unregisterFromTracker();
+                } catch (IOException exception) {
+                    warning = exception.getMessage();
+                    peerNode.clearSharedFiles();
+                } finally {
+                    peerNode.stopServer();
+                }
+                peerNode = null;
+                trackerConnected = false;
+                sharedFiles.clear();
+                searchResults.clear();
             }
             localTrackerServer.stop();
             localTrackerRunning = false;
-            stopLocalTrackerButton.setDisable(true);
-            startLocalTrackerButton.setDisable(false);
+            localTrackerServer = null;
             trackerRecords.clear();
+            setConnectionState(false, connectTrackerButton, checkTrackerButton, disconnectTrackerButton,
+                    trackerHostField, trackerPortField, peerPortField, peerIdField, peerHostField,
+                    trackerRecordsDirField, downloadsDirField,
+                    chooseTrackerRecordsDirButton, chooseDownloadsDirButton, shareFileButton, searchButton,
+                    downloadButton, refreshHistoryButton, refreshTrackerRecordsButton, openDownloadPathButton, searchListView,
+                    progressBar, statusLabel, readinessPill);
             statusLabel.setText("Local tracker stopped");
             appendLog(logArea, "Stopped local tracker on port " + trackerPortField.getText().trim());
-            if (!trackerConnected) {
-                readinessPill.setText("Tracker Disconnected");
-                readinessPill.setStyle(pillStyle("#fde68a", "#7c5a00"));
+            if (warning != null) {
+                appendLog(logArea, "Tracker unregister failed while stopping local tracker: " + warning);
             }
         });
 
         connectTrackerButton.setOnAction(event -> {
-            String host = trackerHostField.getText().trim();
-            int port = Integer.parseInt(trackerPortField.getText().trim());
+            ConnectionConfig config = readConnectionConfig(trackerHostField, trackerPortField, peerPortField, peerIdField,
+                    peerHostField, trackerRecordsDirField, downloadsDirField);
 
             Task<PeerNode> connectTask = new Task<>() {
                 @Override
                 protected PeerNode call() throws Exception {
-                    if (!pingTracker(host, port)) {
-                        throw new IOException("No healthy tracker found on " + host + ":" + port);
+                    if (!pingTracker(config.trackerHost(), config.trackerPort())) {
+                        throw new IOException("No healthy tracker found on " + config.trackerHost() + ":" + config.trackerPort());
                     }
                     PeerNode node = new PeerNode(
-                            peerIdField.getText().trim(),
-                            host,
-                            port,
-                            Integer.parseInt(peerPortField.getText().trim()),
-                            peerHostField.getText().trim(),
-                            Path.of(trackerRecordsDirField.getText().trim()),
-                            Path.of(downloadsDirField.getText().trim())
+                            config.peerId(),
+                            config.trackerHost(),
+                            config.trackerPort(),
+                            config.peerPort(),
+                            config.peerHost(),
+                            config.trackerRecordsDir(),
+                            config.downloadsDir()
                     );
                     node.startServer();
                     return node;
@@ -283,40 +297,32 @@ public class MainApp extends Application {
             connectTask.setOnRunning(evt -> {
                 connectTrackerButton.setDisable(true);
                 checkTrackerButton.setDisable(true);
-                statusLabel.setText("Connecting to tracker and starting peer service...");
+                statusLabel.setText("Connecting to tracker, starting peer service, and opening peer session...");
             });
             connectTask.setOnSucceeded(evt -> {
                 peerNode = connectTask.getValue();
                 trackerConnected = true;
-
-                disconnectTrackerButton.setDisable(false);
-                trackerHostField.setDisable(true);
-                trackerPortField.setDisable(true);
-                peerPortField.setDisable(true);
-                peerIdField.setDisable(true);
-                peerHostField.setDisable(true);
-                trackerRecordsDirField.setDisable(true);
-                downloadsDirField.setDisable(true);
-                chooseTrackerRecordsDirButton.setDisable(true);
-                chooseDownloadsDirButton.setDisable(true);
-                shareFileButton.setDisable(false);
-                searchButton.setDisable(false);
-                refreshHistoryButton.setDisable(false);
-                refreshTrackerRecordsButton.setDisable(false);
+                setConnectionState(true, connectTrackerButton, checkTrackerButton, disconnectTrackerButton,
+                        trackerHostField, trackerPortField, peerPortField, peerIdField, peerHostField,
+                        trackerRecordsDirField, downloadsDirField, chooseTrackerRecordsDirButton, chooseDownloadsDirButton,
+                        shareFileButton, searchButton, downloadButton, refreshHistoryButton, refreshTrackerRecordsButton,
+                        openDownloadPathButton, searchListView, progressBar, statusLabel, readinessPill);
                 readinessPill.setText("Connected to Tracker");
                 readinessPill.setStyle(pillStyle("#c7f2d8", "#0e5d35"));
                 statusLabel.setText("Connected. This peer can now share and download.");
 
-                appendLog(logArea, "Connected to tracker " + host + ":" + port);
-                appendLog(logArea, "Peer ready: " + peerIdField.getText().trim() + " on " + peerHostField.getText().trim() + ":" + peerPortField.getText().trim());
+                appendLog(logArea, "Connected to tracker " + config.trackerHost() + ":" + config.trackerPort());
+                appendLog(logArea, "Peer ready: " + config.peerId() + " on " + config.peerHost() + ":" + config.peerPort());
                 refreshHistory();
                 refreshTrackerRecords(peerNode, logArea);
             });
             connectTask.setOnFailed(evt -> {
                 trackerConnected = false;
-                connectTrackerButton.setDisable(false);
-                checkTrackerButton.setDisable(false);
-                disconnectTrackerButton.setDisable(true);
+                setConnectionState(false, connectTrackerButton, checkTrackerButton, disconnectTrackerButton,
+                        trackerHostField, trackerPortField, peerPortField, peerIdField, peerHostField,
+                        trackerRecordsDirField, downloadsDirField, chooseTrackerRecordsDirButton, chooseDownloadsDirButton,
+                        shareFileButton, searchButton, downloadButton, refreshHistoryButton, refreshTrackerRecordsButton,
+                        openDownloadPathButton, searchListView, progressBar, statusLabel, readinessPill);
                 readinessPill.setText("Tracker Missing");
                 readinessPill.setStyle(pillStyle("#ffd8d2", "#8b2e1f"));
                 appendLog(logArea, "Could not connect to tracker: " + connectTask.getException().getMessage());
@@ -352,18 +358,30 @@ public class MainApp extends Application {
                 sharedFiles.clear();
                 searchResults.clear();
                 trackerRecords.clear();
-                applyDisconnectedState(connectTrackerButton, checkTrackerButton, disconnectTrackerButton,
+                setConnectionState(false, connectTrackerButton, checkTrackerButton, disconnectTrackerButton,
                         trackerHostField, trackerPortField, peerPortField, peerIdField, peerHostField,
                         trackerRecordsDirField, downloadsDirField,
                         chooseTrackerRecordsDirButton, chooseDownloadsDirButton, shareFileButton, searchButton,
-                        downloadButton, refreshHistoryButton, refreshTrackerRecordsButton, openDownloadPathButton,
+                        downloadButton, refreshHistoryButton, refreshTrackerRecordsButton, openDownloadPathButton, searchListView,
                         progressBar, statusLabel, readinessPill);
                 String warning = disconnectTask.getValue();
                 appendLog(logArea, warning == null
                         ? "Disconnected from tracker and cleared shared file registrations."
                         : "Disconnected locally, but tracker unregister request failed: " + warning);
             });
-            disconnectTask.setOnFailed(evt -> appendLog(logArea, "Disconnect failed: " + disconnectTask.getException().getMessage()));
+            disconnectTask.setOnFailed(evt -> {
+                peerNode = null;
+                trackerConnected = false;
+                sharedFiles.clear();
+                searchResults.clear();
+                trackerRecords.clear();
+                setConnectionState(false, connectTrackerButton, checkTrackerButton, disconnectTrackerButton,
+                        trackerHostField, trackerPortField, peerPortField, peerIdField, peerHostField,
+                        trackerRecordsDirField, downloadsDirField, chooseTrackerRecordsDirButton, chooseDownloadsDirButton,
+                        shareFileButton, searchButton, downloadButton, refreshHistoryButton, refreshTrackerRecordsButton,
+                        openDownloadPathButton, searchListView, progressBar, statusLabel, readinessPill);
+                appendLog(logArea, "Disconnect failed: " + disconnectTask.getException().getMessage());
+            });
             runTask(disconnectTask);
         });
 
@@ -383,6 +401,7 @@ public class MainApp extends Application {
                 statusLabel.setText("Share cancelled");
                 return;
             }
+            setTransferState(false, shareFileButton, searchButton, downloadButton, refreshHistoryButton, searchListView);
             Task<Void> shareTask = new Task<>() {
                 @Override
                 protected Void call() throws Exception {
@@ -391,6 +410,7 @@ public class MainApp extends Application {
                 }
             };
             shareTask.setOnSucceeded(evt -> {
+                setTransferState(true, shareFileButton, searchButton, downloadButton, refreshHistoryButton, searchListView);
                 sharedFiles.setAll(peerNode.getSharedFileNames());
                 appendLog(logArea, "Registered shared file: " + selectedFile.getName() +
                         (sharePassword.isBlank() ? "" : " (encrypted)"));
@@ -398,6 +418,7 @@ public class MainApp extends Application {
                 refreshTrackerRecords(peerNode, logArea);
             });
             shareTask.setOnFailed(evt -> {
+                setTransferState(true, shareFileButton, searchButton, downloadButton, refreshHistoryButton, searchListView);
                 appendLog(logArea, "Failed to share file: " + shareTask.getException().getMessage());
                 statusLabel.setText("Failed to share file");
             });
@@ -433,8 +454,11 @@ public class MainApp extends Application {
         searchButton.setOnAction(event -> searchAction.run());
         searchField.setOnAction(event -> searchAction.run());
 
-        searchListView.getSelectionModel().selectedItemProperty().addListener((obs, oldValue, selected) ->
-                downloadButton.setDisable(selected == null || peerNode == null));
+        searchListView.getSelectionModel().selectedItemProperty().addListener((obs, oldValue, selected) -> {
+            if (!transferBusy) {
+                downloadButton.setDisable(selected == null || peerNode == null);
+            }
+        });
         searchListView.setOnMouseClicked(event -> {
             if (event.getClickCount() == 2 && searchListView.getSelectionModel().getSelectedItem() != null && !downloadButton.isDisabled()) {
                 downloadButton.fire();
@@ -451,11 +475,6 @@ public class MainApp extends Application {
                 return;
             }
 
-            shareFileButton.setDisable(true);
-            searchButton.setDisable(true);
-            downloadButton.setDisable(true);
-            refreshHistoryButton.setDisable(true);
-            appendLog(logArea, "Starting download for " + selected.filename() + " from peers: " + peerNode.describeRemotePeers(selected));
             String downloadPassword = "";
             if (selected.encrypted()) {
                 downloadPassword = promptForDownloadPassword(stage, selected);
@@ -465,6 +484,9 @@ public class MainApp extends Application {
                 }
             }
             final String finalDownloadPassword = downloadPassword;
+
+            setTransferState(false, shareFileButton, searchButton, downloadButton, refreshHistoryButton, searchListView);
+            appendLog(logArea, "Starting download for " + selected.filename() + " from peers: " + peerNode.describeRemotePeers(selected));
 
             Task<Path> downloadTask = new Task<>() {
                 @Override
@@ -490,10 +512,7 @@ public class MainApp extends Application {
                 statusLabel.setText("Download complete");
                 appendLog(logArea, "Downloaded to: " + downloadTask.getValue().toAbsolutePath());
                 refreshHistory();
-                shareFileButton.setDisable(false);
-                searchButton.setDisable(false);
-                refreshHistoryButton.setDisable(false);
-                downloadButton.setDisable(searchListView.getSelectionModel().getSelectedItem() == null);
+                setTransferState(true, shareFileButton, searchButton, downloadButton, refreshHistoryButton, searchListView);
             });
             downloadTask.setOnFailed(evt -> {
                 progressBar.progressProperty().unbind();
@@ -502,12 +521,9 @@ public class MainApp extends Application {
                 statusLabel.setText("Download failed");
                 Throwable failure = downloadTask.getException();
                 appendLog(logArea, "Download failed: " + failure.getMessage());
-                appendLog(logArea, "Root cause: " + rootCauseMessage(failure));
+                appendLog(logArea, "Root cause: " + ThrowableUtils.rootCauseMessage(failure));
                 refreshHistory();
-                shareFileButton.setDisable(false);
-                searchButton.setDisable(false);
-                refreshHistoryButton.setDisable(false);
-                downloadButton.setDisable(searchListView.getSelectionModel().getSelectedItem() == null);
+                setTransferState(true, shareFileButton, searchButton, downloadButton, refreshHistoryButton, searchListView);
             });
             runTask(downloadTask);
         });
@@ -536,12 +552,12 @@ public class MainApp extends Application {
         configPane.add(fieldStackWithButton("Tracker Records Folder", "Where per-session tracker records and CSV history are stored", trackerRecordsDirField, chooseTrackerRecordsDirButton), 0, 3, 2, 1);
         configPane.add(fieldStackWithButton("Downloads Folder", "Where downloads and peer history are stored", downloadsDirField, chooseDownloadsDirButton), 0, 4, 2, 1);
 
-        HBox trackerActions = new HBox(10, checkTrackerButton, startLocalTrackerButton, stopLocalTrackerButton);
+        HBox trackerDiscoveryActions = new HBox(10, checkTrackerButton, startLocalTrackerButton);
         HBox.setHgrow(checkTrackerButton, Priority.ALWAYS);
         HBox.setHgrow(startLocalTrackerButton, Priority.ALWAYS);
-        HBox.setHgrow(stopLocalTrackerButton, Priority.ALWAYS);
         checkTrackerButton.setMaxWidth(Double.MAX_VALUE);
         startLocalTrackerButton.setMaxWidth(Double.MAX_VALUE);
+
         stopLocalTrackerButton.setMaxWidth(Double.MAX_VALUE);
 
         HBox connectionActions = new HBox(10, connectTrackerButton, disconnectTrackerButton);
@@ -555,7 +571,12 @@ public class MainApp extends Application {
                 setupHint,
                 helperLabel("Check whether a tracker is already alive. If it is not, you can start one on this machine, then connect this peer to it. For LAN testing, set Peer Host / LAN IP to the address other computers use to reach this machine."),
                 configPane,
-                trackerActions,
+                sectionLabel("Local Tracker"),
+                helperLabel("Use these controls to inspect, start, or stop the tracker process running on this machine."),
+                trackerDiscoveryActions,
+                stopLocalTrackerButton,
+                sectionLabel("Peer Session"),
+                helperLabel("Connect this peer to a tracker session, or disconnect it and clear its shared registrations."),
                 connectionActions
         );
         styleCardTitle((Label) setupCard.getChildren().get(0));
@@ -586,22 +607,26 @@ public class MainApp extends Application {
                 statusLabel
         );
 
-        HBox historyHeader = new HBox(10, titledLabel("Download History"), spacer(), openDownloadPathButton, refreshHistoryButton);
-        historyHeader.setAlignment(Pos.CENTER_LEFT);
+        VBox historyHeader = new VBox(4,
+                titledLabel("Download History"),
+                helperLabel("Recent completed or failed downloads for this peer."));
+
+        HBox historyActions = new HBox(10, spacer(), openDownloadPathButton, refreshHistoryButton);
+        historyActions.setAlignment(Pos.CENTER_LEFT);
 
         HBox trackerRecordsHeader = new HBox(10, titledLabel("Tracker Records"), spacer(), refreshTrackerRecordsButton);
         trackerRecordsHeader.setAlignment(Pos.CENTER_LEFT);
 
         VBox trackerRecordsCard = card(
                 trackerRecordsHeader,
-                helperLabel("Tracker metadata records include file info, original path, and chunk record details."),
+                helperLabel("Tracker metadata records include file info, peer availability, and chunk record details."),
                 trackerRecordsListView
         );
         VBox.setVgrow(trackerRecordsListView, Priority.ALWAYS);
 
         VBox historyCard = card(
                 historyHeader,
-                helperLabel("Recent completed or failed downloads for this peer."),
+                historyActions,
                 historyListView
         );
         VBox.setVgrow(historyListView, Priority.ALWAYS);
@@ -656,6 +681,24 @@ public class MainApp extends Application {
         stage.setMinHeight(760);
         stage.setTitle("Peer-to-Peer File Sharing System");
         stage.setScene(scene);
+        stage.setOnCloseRequest(event -> {
+            if (peerNode != null) {
+                try {
+                    peerNode.unregisterFromTracker();
+                } catch (IOException ignored) {
+                    peerNode.clearSharedFiles();
+                } finally {
+                    peerNode.stopServer();
+                    peerNode = null;
+                    trackerConnected = false;
+                }
+            }
+            if (localTrackerServer != null) {
+                localTrackerServer.stop();
+                localTrackerServer = null;
+                localTrackerRunning = false;
+            }
+        });
         stage.show();
     }
 
@@ -902,22 +945,93 @@ public class MainApp extends Application {
         thread.start();
     }
 
-    private static boolean pingTracker(String host, int port) throws IOException {
-        try (Socket socket = new Socket(host, port);
-             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
-            output.writeUTF("PING");
-            output.flush();
-            boolean success = input.readBoolean();
-            if (!success) {
-                return false;
-            }
-            boolean healthy = "PONG".equals(input.readUTF());
-            if (healthy) {
-                input.readUTF();
-            }
-            return healthy;
+    private static boolean pingTracker(String host, int port) {
+        try {
+            return new TrackerClient(host, port).ping() != null;
+        } catch (IOException exception) {
+            return false;
         }
+    }
+
+    private ConnectionConfig readConnectionConfig(TextField trackerHostField,
+                                                  TextField trackerPortField,
+                                                  TextField peerPortField,
+                                                  TextField peerIdField,
+                                                  TextField peerHostField,
+                                                  TextField trackerRecordsDirField,
+                                                  TextField downloadsDirField) {
+        return new ConnectionConfig(
+                trackerHostField.getText().trim(),
+                Integer.parseInt(trackerPortField.getText().trim()),
+                Integer.parseInt(peerPortField.getText().trim()),
+                peerIdField.getText().trim(),
+                peerHostField.getText().trim(),
+                Path.of(trackerRecordsDirField.getText().trim()),
+                Path.of(downloadsDirField.getText().trim())
+        );
+    }
+
+    private void setConnectionState(boolean connected,
+                                    Button connectTrackerButton,
+                                    Button checkTrackerButton,
+                                    Button disconnectTrackerButton,
+                                    TextField trackerHostField,
+                                    TextField trackerPortField,
+                                    TextField peerPortField,
+                                    TextField peerIdField,
+                                    TextField peerHostField,
+                                    TextField trackerRecordsDirField,
+                                    TextField downloadsDirField,
+                                    Button chooseTrackerRecordsDirButton,
+                                    Button chooseDownloadsDirButton,
+                                    Button shareFileButton,
+                                    Button searchButton,
+                                    Button downloadButton,
+                                    Button refreshHistoryButton,
+                                    Button refreshTrackerRecordsButton,
+                                    Button openDownloadPathButton,
+                                    ListView<SearchResult> searchListView,
+                                    ProgressBar progressBar,
+                                    Label statusLabel,
+                                    Label readinessPill) {
+        transferBusy = false;
+        connectTrackerButton.setDisable(connected);
+        checkTrackerButton.setDisable(connected);
+        disconnectTrackerButton.setDisable(!connected);
+        trackerHostField.setDisable(connected);
+        trackerPortField.setDisable(connected);
+        peerPortField.setDisable(connected);
+        peerIdField.setDisable(connected);
+        peerHostField.setDisable(connected);
+        trackerRecordsDirField.setDisable(connected);
+        downloadsDirField.setDisable(connected);
+        chooseTrackerRecordsDirButton.setDisable(connected);
+        chooseDownloadsDirButton.setDisable(connected);
+        shareFileButton.setDisable(!connected);
+        searchButton.setDisable(!connected);
+        downloadButton.setDisable(!connected || searchListView.getSelectionModel().getSelectedItem() == null || peerNode == null);
+        refreshHistoryButton.setDisable(!connected);
+        refreshTrackerRecordsButton.setDisable(!connected);
+        if (!connected) {
+            openDownloadPathButton.setDisable(true);
+        }
+        progressBar.setProgress(0);
+        statusLabel.setText(connected ? "Connected to tracker" : "Disconnected from tracker");
+        readinessPill.setText(localTrackerRunning ? (connected ? "Connected to Tracker" : "Tracker Healthy") : "Tracker Disconnected");
+        readinessPill.setStyle(localTrackerRunning ? pillStyle("#cdeccf", "#0d5d31") : pillStyle("#fde68a", "#7c5a00"));
+    }
+
+    private void setTransferState(boolean enabled,
+                                  Button shareFileButton,
+                                  Button searchButton,
+                                  Button downloadButton,
+                                  Button refreshHistoryButton,
+                                  ListView<SearchResult> searchListView) {
+        transferBusy = !enabled;
+        shareFileButton.setDisable(!enabled);
+        searchButton.setDisable(!enabled);
+        refreshHistoryButton.setDisable(!enabled);
+        downloadButton.setDisable(!enabled || peerNode == null || searchListView.getSelectionModel().getSelectedItem() == null);
     }
 
     private static String suggestPeerHost() {
@@ -943,12 +1057,13 @@ public class MainApp extends Application {
         return SIZE_FORMAT.format(mb / 1024.0) + " GB";
     }
 
-    private static String rootCauseMessage(Throwable throwable) {
-        Throwable cursor = throwable;
-        while (cursor.getCause() != null) {
-            cursor = cursor.getCause();
-        }
-        return cursor.getMessage() == null ? cursor.getClass().getSimpleName() : cursor.getMessage();
+    private record ConnectionConfig(String trackerHost,
+                                    int trackerPort,
+                                    int peerPort,
+                                    String peerId,
+                                    String peerHost,
+                                    Path trackerRecordsDir,
+                                    Path downloadsDir) {
     }
 
     public static void main(String[] args) {
@@ -1018,10 +1133,6 @@ public class MainApp extends Application {
             Label details = new Label(humanReadableSize(item.size()) + " • " + item.chunkCount() + " chunks • " +
                     item.peers().size() + " peer(s)" + (item.encrypted() ? " • encrypted" : ""));
             details.setStyle("-fx-font-size: 12px; -fx-text-fill: #617486;");
-            String pathValue = item.originalPath() == null || item.originalPath().isBlank() ? "(path unavailable)" : item.originalPath();
-            Label path = new Label(pathValue);
-            path.setWrapText(true);
-            path.setStyle("-fx-font-size: 11px; -fx-text-fill: #35556c;");
             Label chunks = new Label(item.chunkRecords().isEmpty()
                     ? "No chunk records"
                     : "Chunk records: " + item.chunkRecords().get(0) +
@@ -1029,7 +1140,7 @@ public class MainApp extends Application {
             chunks.setWrapText(true);
             chunks.setStyle("-fx-font-size: 11px; -fx-text-fill: #35556c;");
 
-            VBox content = new VBox(4, filename, details, path, chunks);
+            VBox content = new VBox(4, filename, details, chunks);
             content.setPadding(new Insets(8, 4, 8, 4));
             setGraphic(content);
         }

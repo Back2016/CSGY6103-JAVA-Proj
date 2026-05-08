@@ -3,8 +3,8 @@ package edu.nyu.cs6103.p2p.model;
 import java.util.List;
 
 public record TrackerRecord(String filename,
+                            String fileId,
                             long size,
-                            String originalPath,
                             int chunkSize,
                             int chunkCount,
                             boolean encrypted,
@@ -13,8 +13,7 @@ public record TrackerRecord(String filename,
                             List<ChunkRecord> chunkRecords) {
     @Override
     public String toString() {
-        return filename + " | " + size + " bytes | " + chunkCount + " chunks | " +
-                peers.size() + " peer(s)" + (encrypted ? " | encrypted" : "") +
-                (originalPath == null || originalPath.isBlank() ? "" : " | " + originalPath);
+        return filename + " | " + fileId + " | " + size + " bytes | " + chunkCount + " chunks | " +
+                peers.size() + " peer(s)" + (encrypted ? " | encrypted" : "");
     }
 }
