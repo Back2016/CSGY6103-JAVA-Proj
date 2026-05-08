@@ -67,6 +67,7 @@ public final class TrackerClient {
         requestWithAcknowledgement(ProtocolCommands.REGISTER, output -> {
             output.writeUTF(sessionToken);
             output.writeUTF(descriptor.fileId());
+            output.writeUTF(descriptor.contentHash());
             output.writeUTF(descriptor.filename());
             output.writeLong(descriptor.size());
             output.writeInt(descriptor.chunkSize());
@@ -88,6 +89,7 @@ public final class TrackerClient {
             List<SearchResult> results = new ArrayList<>();
             for (int resultIndex = 0; resultIndex < resultCount; resultIndex++) {
                 String fileId = input.readUTF();
+                String contentHash = input.readUTF();
                 String filename = input.readUTF();
                 long size = input.readLong();
                 int chunkSize = input.readInt();
@@ -98,7 +100,7 @@ public final class TrackerClient {
                 for (int peerIndex = 0; peerIndex < peerCount; peerIndex++) {
                     peers.add(new PeerInfo(input.readUTF(), input.readUTF(), input.readInt()));
                 }
-                results.add(new SearchResult(filename, fileId, size, chunkSize, chunkCount, encrypted, peers));
+                results.add(new SearchResult(filename, fileId, contentHash, size, chunkSize, chunkCount, encrypted, peers));
             }
             return results;
         }
@@ -116,6 +118,7 @@ public final class TrackerClient {
             List<TrackerRecord> records = new ArrayList<>();
             for (int recordIndex = 0; recordIndex < recordCount; recordIndex++) {
                 String fileId = input.readUTF();
+                String contentHash = input.readUTF();
                 String filename = input.readUTF();
                 long size = input.readLong();
                 int chunkSize = input.readInt();
@@ -132,7 +135,7 @@ public final class TrackerClient {
                 for (int chunkIndex = 0; chunkIndex < chunkRecordCount; chunkIndex++) {
                     chunkRecords.add(new ChunkRecord(input.readInt(), input.readLong(), input.readInt()));
                 }
-                records.add(new TrackerRecord(filename, fileId, size, chunkSize, chunkCount, encrypted, updatedAt, peers, chunkRecords));
+                records.add(new TrackerRecord(filename, fileId, contentHash, size, chunkSize, chunkCount, encrypted, updatedAt, peers, chunkRecords));
             }
             return records;
         }

@@ -40,6 +40,7 @@ public class TrackerDatabase {
         String sharedFilesDdl = """
                 CREATE TABLE IF NOT EXISTS shared_files (
                     file_id TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
                     filename TEXT NOT NULL,
                     size INTEGER NOT NULL,
                     chunk_size INTEGER NOT NULL,
@@ -66,6 +67,7 @@ public class TrackerDatabase {
     private boolean needsSchemaRebuild(Connection connection) throws SQLException {
         return !hasColumn(connection, "shared_files", "session_token")
                 || !hasColumn(connection, "shared_files", "file_id")
+                || !hasColumn(connection, "shared_files", "content_hash")
                 || hasColumn(connection, "shared_files", "original_path")
                 || !hasTable(connection, "peer_sessions");
     }
@@ -133,10 +135,11 @@ public class TrackerDatabase {
     public synchronized void registerSharedFile(SharedFileDescriptor descriptor,
                                                 String sessionToken) {
         String sql = """
-                INSERT INTO shared_files (file_id, filename, size, chunk_size, chunk_count, encrypted, session_token, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO shared_files (file_id, content_hash, filename, size, chunk_size, chunk_count, encrypted, session_token, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(file_id, session_token)
                 DO UPDATE SET
+                    content_hash = excluded.content_hash,
                     filename = excluded.filename,
                     size = excluded.size,
                     chunk_size = excluded.chunk_size,
@@ -148,13 +151,14 @@ public class TrackerDatabase {
              PreparedStatement statement = connection.prepareStatement(sql)) {
             requireActiveSession(connection, sessionToken);
             statement.setString(1, descriptor.fileId());
-            statement.setString(2, descriptor.filename());
-            statement.setLong(3, descriptor.size());
-            statement.setInt(4, descriptor.chunkSize());
-            statement.setInt(5, descriptor.chunkCount());
-            statement.setInt(6, descriptor.encrypted() ? 1 : 0);
-            statement.setString(7, sessionToken);
-            statement.setString(8, LocalDateTime.now().toString());
+            statement.setString(2, descriptor.contentHash());
+            statement.setString(3, descriptor.filename());
+            statement.setLong(4, descriptor.size());
+            statement.setInt(5, descriptor.chunkSize());
+            statement.setInt(6, descriptor.chunkCount());
+            statement.setInt(7, descriptor.encrypted() ? 1 : 0);
+            statement.setString(8, sessionToken);
+            statement.setString(9, LocalDateTime.now().toString());
             statement.executeUpdate();
         } catch (SQLException exception) {
             throw new IllegalStateException("Failed to register file " + descriptor.filename(), exception);
@@ -220,7 +224,7 @@ public class TrackerDatabase {
 
     public synchronized List<SearchResult> searchFiles(String query) {
         String sql = """
-                SELECT sf.file_id, sf.filename, sf.size, sf.chunk_size, sf.chunk_count, MAX(sf.encrypted) AS encrypted
+                SELECT sf.file_id, sf.content_hash, sf.filename, sf.size, sf.chunk_size, sf.chunk_count, MAX(sf.encrypted) AS encrypted
                 FROM shared_files sf
                 JOIN peer_sessions ps ON ps.session_token = sf.session_token
                 WHERE filename LIKE ?
@@ -243,6 +247,7 @@ public class TrackerDatabase {
                     results.add(new SearchResult(
                             filename,
                             fileId,
+                            resultSet.getString("content_hash"),
                             size,
                             chunkSize,
                             chunkCount,
@@ -259,7 +264,7 @@ public class TrackerDatabase {
 
     public synchronized List<TrackerRecord> listTrackerRecords() {
         String sql = """
-                SELECT sf.file_id, sf.filename, sf.size, sf.chunk_size, sf.chunk_count,
+                SELECT sf.file_id, sf.content_hash, sf.filename, sf.size, sf.chunk_size, sf.chunk_count,
                        MAX(sf.encrypted) AS encrypted, MAX(sf.updated_at) AS updated_at
                 FROM shared_files sf
                 JOIN peer_sessions ps ON ps.session_token = sf.session_token
@@ -281,6 +286,7 @@ public class TrackerDatabase {
                 records.add(new TrackerRecord(
                         filename,
                         fileId,
+                        resultSet.getString("content_hash"),
                         size,
                         chunkSize,
                         chunkCount,

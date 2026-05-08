@@ -14,7 +14,7 @@ import java.util.Comparator;
 import java.util.List;
 
 public class ClientDatabase {
-    private static final String HEADER = "created_at,filename,source_peers,destination_path,status";
+    private static final String HEADER = "created_at,file_id,filename,source_peers,destination_path,status";
 
     private final Path csvPath;
 
@@ -34,10 +34,11 @@ public class ClientDatabase {
         }
     }
 
-    public synchronized void recordDownload(String filename, String sourcePeers, String destinationPath, String status) {
+    public synchronized void recordDownload(String fileId, String filename, String sourcePeers, String destinationPath, String status) {
         String createdAt = LocalDateTime.now().toString();
         String row = String.join(",",
                 CsvUtils.quote(createdAt),
+                CsvUtils.quote(fileId),
                 CsvUtils.quote(filename),
                 CsvUtils.quote(sourcePeers),
                 CsvUtils.quote(destinationPath),
@@ -66,13 +67,25 @@ public class ClientDatabase {
                 if (values.size() < 5) {
                     continue;
                 }
-                entries.add(new DownloadHistoryEntry(
-                        values.get(1),
-                        values.get(2),
-                        values.get(3),
-                        values.get(4),
-                        values.get(0)
-                ));
+                if (values.size() >= 6) {
+                    entries.add(new DownloadHistoryEntry(
+                            values.get(1),
+                            values.get(2),
+                            values.get(3),
+                            values.get(4),
+                            values.get(5),
+                            values.get(0)
+                    ));
+                } else {
+                    entries.add(new DownloadHistoryEntry(
+                            "",
+                            values.get(1),
+                            values.get(2),
+                            values.get(3),
+                            values.get(4),
+                            values.get(0)
+                    ));
+                }
             }
             entries.sort(Comparator.comparing(DownloadHistoryEntry::createdAt).reversed());
             return entries;

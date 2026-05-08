@@ -4,6 +4,7 @@ import java.util.List;
 
 public record SearchResult(String filename,
                            String fileId,
+                           String contentHash,
                            long size,
                            int chunkSize,
                            int chunkCount,
