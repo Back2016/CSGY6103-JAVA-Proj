@@ -94,6 +94,7 @@ public class TrackerServer {
                 case ProtocolCommands.DISCONNECT -> handleDisconnect(input, output);
                 case ProtocolCommands.SEARCH -> handleSearch(input, output);
                 case ProtocolCommands.LIST_RECORDS -> handleListRecords(output);
+                case ProtocolCommands.PEER_COUNT -> handlePeerCount(output);
                 default -> {
                     output.writeBoolean(false);
                     output.writeUTF("Unsupported tracker command: " + command);
@@ -218,6 +219,13 @@ public class TrackerServer {
                 output.writeInt(chunkRecord.length());
             }
         }
+        output.flush();
+    }
+
+    private void handlePeerCount(DataOutputStream output) throws IOException {
+        int count = database.countActivePeers();
+        output.writeBoolean(true);
+        output.writeInt(count);
         output.flush();
     }
 }

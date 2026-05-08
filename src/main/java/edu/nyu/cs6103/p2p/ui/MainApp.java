@@ -9,11 +9,15 @@ import edu.nyu.cs6103.p2p.model.TrackerRecord;
 import edu.nyu.cs6103.p2p.peer.PeerNode;
 import edu.nyu.cs6103.p2p.tracker.TrackerServer;
 import edu.nyu.cs6103.p2p.tracker.TrackerClient;
+import javafx.animation.KeyFrame;
+import javafx.animation.Timeline;
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.util.Duration;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.concurrent.Task;
+import javafx.concurrent.Worker;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
@@ -22,16 +26,19 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
 import javafx.scene.control.ProgressBar;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.TextInputDialog;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
@@ -42,6 +49,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.DecimalFormat;
+import java.util.ArrayList;
 import java.util.List;
 
 public class MainApp extends Application {
@@ -55,6 +63,12 @@ public class MainApp extends Application {
     private final ObservableList<SearchResult> searchResults = FXCollections.observableArrayList();
     private final ObservableList<DownloadHistoryEntry> historyEntries = FXCollections.observableArrayList();
     private final ObservableList<TrackerRecord> trackerRecords = FXCollections.observableArrayList();
+
+    private final VBox notificationPane = new VBox(8);
+    private final Label peerCountLabel = new Label("— peers online");
+    private final List<String> recentSearches = new ArrayList<>();
+    private final FlowPane recentSearchPane = new FlowPane(6, 6);
+    private Timeline peerCountTimeline;
 
     private PeerNode peerNode;
     private TrackerServer localTrackerServer;
@@ -82,6 +96,7 @@ public class MainApp extends Application {
         Button disconnectTrackerButton = secondaryButton("Disconnect Tracker");
         Button chooseTrackerRecordsDirButton = secondaryButton("Folder");
         Button chooseDownloadsDirButton = secondaryButton("Folder");
+        Button openDownloadsDirButton = secondaryButton("Open");
         Button shareFileButton = primaryButton("Share a File");
         Button searchButton = primaryButton("Search");
         Button downloadButton = primaryButton("Download Selected");
@@ -106,6 +121,8 @@ public class MainApp extends Application {
         Label readinessPill = new Label("Tracker Disconnected");
         readinessPill.setStyle(pillStyle("#fde68a", "#7c5a00"));
 
+        peerCountLabel.setStyle("-fx-font-size: 12px; -fx-text-fill: #607282;");
+
         Label setupHint = new Label("1. Check Tracker  2. Connect  3. Share File  4. Search  5. Download");
         setupHint.setStyle("-fx-text-fill: #38556f; -fx-font-size: 13px; -fx-font-weight: 600;");
 
@@ -125,6 +142,7 @@ public class MainApp extends Application {
         trackerRecordsListView.setPlaceholder(new Label("No tracker records yet."));
         trackerRecordsListView.setCellFactory(list -> new TrackerRecordCell());
 
+
         TextArea logArea = new TextArea();
         logArea.setEditable(false);
         logArea.setWrapText(true);
@@ -139,6 +157,7 @@ public class MainApp extends Application {
 
         chooseTrackerRecordsDirButton.setOnAction(event -> chooseDirectory(stage, trackerRecordsDirField));
         chooseDownloadsDirButton.setOnAction(event -> chooseDirectory(stage, downloadsDirField));
+        openDownloadsDirButton.setOnAction(event -> openDownloadLocation(Path.of(downloadsDirField.getText().trim()), logArea));
         historyListView.getSelectionModel().selectedItemProperty().addListener((obs, oldValue, selected) ->
                 openDownloadPathButton.setDisable(selected == null));
 
@@ -257,6 +276,8 @@ public class MainApp extends Application {
             localTrackerRunning = false;
             localTrackerServer = null;
             trackerRecords.clear();
+            peerCountLabel.setText("— peers online");
+            if (peerCountTimeline != null) { peerCountTimeline.stop(); peerCountTimeline = null; }
             setConnectionState(false, connectTrackerButton, checkTrackerButton, disconnectTrackerButton,
                     trackerHostField, trackerPortField, peerPortField, peerIdField, peerHostField,
                     trackerRecordsDirField, downloadsDirField,
@@ -315,6 +336,20 @@ public class MainApp extends Application {
                 appendLog(logArea, "Peer ready: " + config.peerId() + " on " + config.peerHost() + ":" + config.peerPort());
                 refreshHistory();
                 refreshTrackerRecords(peerNode, logArea);
+                peerCountTimeline = new Timeline(new KeyFrame(Duration.seconds(2), e -> {
+                    if (peerNode != null) {
+                        Task<Integer> countTask = new Task<>() {
+                            @Override
+                            protected Integer call() throws Exception {
+                                return peerNode.fetchPeerCount();
+                            }
+                        };
+                        countTask.setOnSucceeded(ev -> peerCountLabel.setText(countTask.getValue() + " peer(s) online"));
+                        runTask(countTask);
+                    }
+                }));
+                peerCountTimeline.setCycleCount(Timeline.INDEFINITE);
+                peerCountTimeline.play();
             });
             connectTask.setOnFailed(evt -> {
                 trackerConnected = false;
@@ -358,6 +393,8 @@ public class MainApp extends Application {
                 sharedFiles.clear();
                 searchResults.clear();
                 trackerRecords.clear();
+            peerCountLabel.setText("— peers online");
+            if (peerCountTimeline != null) { peerCountTimeline.stop(); peerCountTimeline = null; }
                 setConnectionState(false, connectTrackerButton, checkTrackerButton, disconnectTrackerButton,
                         trackerHostField, trackerPortField, peerPortField, peerIdField, peerHostField,
                         trackerRecordsDirField, downloadsDirField,
@@ -375,6 +412,8 @@ public class MainApp extends Application {
                 sharedFiles.clear();
                 searchResults.clear();
                 trackerRecords.clear();
+            peerCountLabel.setText("— peers online");
+            if (peerCountTimeline != null) { peerCountTimeline.stop(); peerCountTimeline = null; }
                 setConnectionState(false, connectTrackerButton, checkTrackerButton, disconnectTrackerButton,
                         trackerHostField, trackerPortField, peerPortField, peerIdField, peerHostField,
                         trackerRecordsDirField, downloadsDirField, chooseTrackerRecordsDirButton, chooseDownloadsDirButton,
@@ -432,6 +471,25 @@ public class MainApp extends Application {
 
             String query = searchField.getText().trim();
             statusLabel.setText(query.isEmpty() ? "Loading all known files..." : "Searching for \"" + query + "\"...");
+
+            if (!query.isEmpty()) {
+                recentSearches.remove(query);
+                recentSearches.add(0, query);
+                if (recentSearches.size() > 3) recentSearches.remove(recentSearches.size() - 1);
+                recentSearchPane.getChildren().clear();
+                for (String q : recentSearches) {
+                    Button chip = new Button("🔍 " + q);
+                    chip.setStyle("-fx-background-color: #e8f0fe; -fx-text-fill: #1a4a8a; -fx-font-size: 11px; " +
+                            "-fx-padding: 3 10 3 10; -fx-background-radius: 12; -fx-cursor: hand; -fx-border-color: #b3c8f5; " +
+                            "-fx-border-radius: 12;");
+                    chip.setOnAction(e -> {
+                        searchField.setText(q);
+                        searchButton.fire();
+                    });
+                    recentSearchPane.getChildren().add(chip);
+                }
+                recentSearchPane.setVisible(true);
+            }
 
             Task<List<SearchResult>> searchTask = new Task<>() {
                 @Override
@@ -526,6 +584,7 @@ public class MainApp extends Application {
                 setTransferState(true, shareFileButton, searchButton, downloadButton, refreshHistoryButton, searchListView);
             });
             runTask(downloadTask);
+            showDownloadNotification(selected.filename(), downloadTask);
         });
 
         refreshHistoryButton.setOnAction(event -> refreshHistory());
@@ -550,7 +609,7 @@ public class MainApp extends Application {
                 fieldStack("Peer Port", "This peer's upload port", peerPortField));
         configPane.add(fieldStack("Peer Host / LAN IP", "Other computers must be able to reach this address", peerHostField), 0, 2, 2, 1);
         configPane.add(fieldStackWithButton("Tracker Records Folder", "Where per-session tracker records and CSV history are stored", trackerRecordsDirField, chooseTrackerRecordsDirButton), 0, 3, 2, 1);
-        configPane.add(fieldStackWithButton("Downloads Folder", "Where downloads and peer history are stored", downloadsDirField, chooseDownloadsDirButton), 0, 4, 2, 1);
+        configPane.add(fieldStackWithButton("Downloads Folder", "Where downloads and peer history are stored", downloadsDirField, chooseDownloadsDirButton, openDownloadsDirButton), 0, 4, 2, 1);
 
         HBox trackerDiscoveryActions = new HBox(10, checkTrackerButton, startLocalTrackerButton);
         HBox.setHgrow(checkTrackerButton, Priority.ALWAYS);
@@ -593,10 +652,14 @@ public class MainApp extends Application {
         searchControls.setAlignment(Pos.CENTER_LEFT);
         HBox.setHgrow(searchField, Priority.ALWAYS);
 
+        recentSearchPane.setVisible(false);
+        recentSearchPane.managedProperty().bind(recentSearchPane.visibleProperty());
+
         VBox searchCard = card(
                 titledLabel("Step 3: Search and Download"),
                 helperLabel("Search by filename, select a result, or double-click it to download."),
                 searchControls,
+                recentSearchPane,
                 searchListView
         );
         VBox.setVgrow(searchListView, Priority.ALWAYS);
@@ -614,7 +677,7 @@ public class MainApp extends Application {
         HBox historyActions = new HBox(10, spacer(), openDownloadPathButton, refreshHistoryButton);
         historyActions.setAlignment(Pos.CENTER_LEFT);
 
-        HBox trackerRecordsHeader = new HBox(10, titledLabel("Tracker Records"), spacer(), refreshTrackerRecordsButton);
+        HBox trackerRecordsHeader = new HBox(10, titledLabel("Tracker Records"), spacer(), peerCountLabel, refreshTrackerRecordsButton);
         trackerRecordsHeader.setAlignment(Pos.CENTER_LEFT);
 
         VBox trackerRecordsCard = card(
@@ -674,9 +737,15 @@ public class MainApp extends Application {
                 -fx-font-family: 'Aptos', 'Segoe UI', sans-serif;
                 """);
 
-        BorderPane root = new BorderPane(rootContent);
+        notificationPane.setPickOnBounds(false);
+        notificationPane.setPadding(new Insets(0, 20, 20, 0));
+        notificationPane.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
+        StackPane.setAlignment(notificationPane, Pos.BOTTOM_RIGHT);
 
-        Scene scene = new Scene(root, 1540, 900);
+        BorderPane root = new BorderPane(rootContent);
+        StackPane sceneRoot = new StackPane(root, notificationPane);
+
+        Scene scene = new Scene(sceneRoot, 1540, 900);
         stage.setMinWidth(1260);
         stage.setMinHeight(760);
         stage.setTitle("Peer-to-Peer File Sharing System");
@@ -748,8 +817,9 @@ public class MainApp extends Application {
         return box;
     }
 
-    private VBox fieldStackWithButton(String title, String hint, TextField field, Button button) {
-        HBox row = new HBox(10, field, button);
+    private VBox fieldStackWithButton(String title, String hint, TextField field, Button... buttons) {
+        HBox row = new HBox(10, field);
+        row.getChildren().addAll(buttons);
         HBox.setHgrow(field, Priority.ALWAYS);
         return new VBox(6, sectionLabel(title), helperLabel(hint), row);
     }
@@ -839,13 +909,19 @@ public class MainApp extends Application {
     }
 
     private void refreshTrackerRecords(PeerNode node, TextArea logArea) {
-        Task<List<TrackerRecord>> task = new Task<>() {
+        Task<Object[]> task = new Task<>() {
             @Override
-            protected List<TrackerRecord> call() throws Exception {
-                return node.fetchTrackerRecords();
+            protected Object[] call() throws Exception {
+                return new Object[]{node.fetchTrackerRecords(), node.fetchPeerCount()};
             }
         };
-        task.setOnSucceeded(evt -> trackerRecords.setAll(task.getValue()));
+        task.setOnSucceeded(evt -> {
+            @SuppressWarnings("unchecked")
+            List<TrackerRecord> records = (List<TrackerRecord>) task.getValue()[0];
+            int count = (int) task.getValue()[1];
+            trackerRecords.setAll(records);
+            peerCountLabel.setText(count + " peer(s) online");
+        });
         task.setOnFailed(evt -> appendLog(logArea, "Could not refresh tracker records: " + task.getException().getMessage()));
         runTask(task);
     }
@@ -1032,6 +1108,84 @@ public class MainApp extends Application {
         searchButton.setDisable(!enabled);
         refreshHistoryButton.setDisable(!enabled);
         downloadButton.setDisable(!enabled || peerNode == null || searchListView.getSelectionModel().getSelectedItem() == null);
+    }
+
+    private void showDownloadNotification(String filename, Task<Path> task) {
+        ProgressIndicator indicator = new ProgressIndicator(0);
+        indicator.setPrefSize(40, 40);
+        indicator.setStyle("-fx-progress-color: #1f7a5c;");
+        indicator.progressProperty().bind(task.progressProperty());
+
+        String displayName = filename.length() > 26 ? filename.substring(0, 23) + "…" : filename;
+        Label nameLabel = new Label(displayName);
+        nameLabel.setStyle("-fx-font-size: 13px; -fx-font-weight: 700; -fx-text-fill: #163048;");
+
+        Label msgLabel = new Label("Starting download…");
+        msgLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #607282;");
+        msgLabel.textProperty().bind(task.messageProperty());
+
+        Button closeBtn = new Button("✕");
+        closeBtn.setStyle("""
+                -fx-background-color: transparent;
+                -fx-text-fill: #8899aa;
+                -fx-font-size: 13px;
+                -fx-cursor: hand;
+                -fx-padding: 2 6 2 6;
+                """);
+
+        VBox textBox = new VBox(3, nameLabel, msgLabel);
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        HBox card = new HBox(12, indicator, textBox, spacer, closeBtn);
+        card.setPadding(new Insets(14));
+        card.setPrefWidth(310);
+        card.setAlignment(Pos.CENTER_LEFT);
+        card.setStyle("""
+                -fx-background-color: white;
+                -fx-background-radius: 14;
+                -fx-border-radius: 14;
+                -fx-border-color: rgba(166,185,200,0.5);
+                -fx-effect: dropshadow(gaussian, rgba(32,56,77,0.18), 20, 0.2, 0, 6);
+                """);
+
+        closeBtn.setOnAction(e -> notificationPane.getChildren().remove(card));
+
+        task.stateProperty().addListener((obs, oldState, newState) -> {
+            if (newState == Worker.State.SUCCEEDED) {
+                indicator.progressProperty().unbind();
+                msgLabel.textProperty().unbind();
+                indicator.setProgress(1.0);
+                nameLabel.setText("✅ " + displayName);
+                msgLabel.setText("Download complete");
+                msgLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #0e5d35; -fx-font-weight: 700;");
+                card.setStyle("""
+                        -fx-background-color: #f0faf3;
+                        -fx-background-radius: 14;
+                        -fx-border-radius: 14;
+                        -fx-border-color: rgba(14,93,53,0.3);
+                        -fx-effect: dropshadow(gaussian, rgba(32,56,77,0.18), 20, 0.2, 0, 6);
+                        """);
+            } else if (newState == Worker.State.FAILED) {
+                indicator.progressProperty().unbind();
+                msgLabel.textProperty().unbind();
+                nameLabel.setText("❌ " + displayName);
+                msgLabel.setText("Download failed");
+                msgLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #8b2e1f; -fx-font-weight: 700;");
+                card.setStyle("""
+                        -fx-background-color: #fff5f5;
+                        -fx-background-radius: 14;
+                        -fx-border-radius: 14;
+                        -fx-border-color: rgba(139,46,31,0.3);
+                        -fx-effect: dropshadow(gaussian, rgba(32,56,77,0.18), 20, 0.2, 0, 6);
+                        """);
+            }
+        });
+
+        if (notificationPane.getChildren().size() >= 2) {
+            notificationPane.getChildren().remove(0);
+        }
+        notificationPane.getChildren().add(card);
     }
 
     private static String suggestPeerHost() {

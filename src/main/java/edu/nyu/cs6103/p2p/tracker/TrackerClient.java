@@ -138,6 +138,17 @@ public final class TrackerClient {
         }
     }
 
+    public int peerCount() throws IOException {
+        try (Socket socket = openSocket();
+             DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+             DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()))) {
+            output.writeUTF(ProtocolCommands.PEER_COUNT);
+            output.flush();
+            readSuccess(input);
+            return input.readInt();
+        }
+    }
+
     public void disconnect(String sessionToken) throws IOException {
         requestWithAcknowledgement(ProtocolCommands.DISCONNECT, output -> output.writeUTF(sessionToken));
     }

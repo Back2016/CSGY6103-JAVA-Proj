@@ -6,6 +6,7 @@ public final class ProtocolCommands {
     public static final String HEARTBEAT = "HEARTBEAT";
     public static final String HELLO = "HELLO";
     public static final String LIST_RECORDS = "LIST_RECORDS";
+    public static final String PEER_COUNT = "PEER_COUNT";
     public static final String MANIFEST = "MANIFEST";
     public static final String PING = "PING";
     public static final String PONG = "PONG";
