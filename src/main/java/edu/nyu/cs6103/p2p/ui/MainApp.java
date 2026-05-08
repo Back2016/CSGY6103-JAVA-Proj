@@ -104,8 +104,8 @@ public class MainApp extends Application {
         Button searchButton = primaryButton("Search");
         Button downloadButton = primaryButton("Download Selected");
         Button refreshHistoryButton = secondaryButton("Refresh");
-        Button refreshTrackerRecordsButton = secondaryButton("Refresh Records");
-        Button loadTrackerRecordsCsvButton = secondaryButton("Read Past Records");
+        Button refreshTrackerRecordsButton = secondaryButton("Refresh");
+        Button loadTrackerRecordsCsvButton = secondaryButton("Load CSV");
         Button openDownloadPathButton = secondaryButton("Open Folder");
 
         shareFileButton.setDisable(true);
@@ -684,12 +684,13 @@ public class MainApp extends Application {
         HBox historyActions = new HBox(10, spacer(), openDownloadPathButton, refreshHistoryButton);
         historyActions.setAlignment(Pos.CENTER_LEFT);
 
-        HBox trackerRecordsHeader = new HBox(10, titledLabel("Tracker Records"), spacer(), peerCountLabel, loadTrackerRecordsCsvButton, refreshTrackerRecordsButton);
+        VBox trackerRecordsTitle = new VBox(2, titledLabel("Tracker Records"), peerCountLabel);
+        HBox trackerRecordsHeader = new HBox(10, trackerRecordsTitle, spacer(), loadTrackerRecordsCsvButton, refreshTrackerRecordsButton);
         trackerRecordsHeader.setAlignment(Pos.CENTER_LEFT);
 
         VBox trackerRecordsCard = card(
                 trackerRecordsHeader,
-                helperLabel("Tracker metadata records below are the live records from the currently connected tracker. Use Read Past Records to open an older saved tracker_records.csv file."),
+                helperLabel("The list below shows live records from the connected tracker. Use Load CSV to open an older saved tracker_records.csv file."),
                 trackerRecordsListView
         );
         VBox.setVgrow(trackerRecordsListView, Priority.ALWAYS);
